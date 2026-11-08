@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:battle_client/src/adapters/appwrite_host_finder.dart';
 import 'package:battle_client/src/backoff.dart';
 import 'package:battle_client/src/credential.dart';
 import 'package:battle_client/src/held_view.dart';
@@ -76,17 +77,21 @@ final class CommandAnswer {
 
 /// {@template client_stopped}
 /// What an unanswered command fails with when its client stops for good:
-/// [stoppedBy] is the host's last word, or null when the client was closed.
+/// [stoppedBy] is the host's last word, [lookupRefused] the answer that
+/// gave no host, or both null when the client was closed.
 /// {@endtemplate}
 final class ClientStoppedException implements Exception {
   /// {@macro client_stopped}
-  const new(this.stoppedBy);
+  const new(this.stoppedBy, {this.lookupRefused});
 
   /// The refused sign-in or the goodbye that stopped the client.
   final HostMessage? stoppedBy;
 
+  /// The lasting refusal to give the host's address.
+  final HostLookupException? lookupRefused;
+
   @override
-  String toString() => 'ClientStoppedException($stoppedBy)';
+  String toString() => 'ClientStoppedException(${stoppedBy ?? lookupRefused})';
 }
 
 /// {@template battle_client}
@@ -94,17 +99,20 @@ final class ClientStoppedException implements Exception {
 /// app (M7) and AI agents written in Dart, on every target, the web
 /// included.
 ///
-/// It opens a socket to the host at the address it is given, signs in to
-/// [battleId] with the credential it is given, keeps the section's [view]
-/// from its whole view and updates, and sends commands, each answered by
-/// its request ID.
-/// When it loses the host it waits ([ClientSettings.backoff]), asks for the
-/// address and a credential again, signs in again, takes its whole view,
-/// and resends every command that got no answer with its request ID: the
-/// host carries each out once (M6 Issue 5).
+/// It asks for a credential, then for the address of the battle's host
+/// with it (`AppwriteHostFinder.socketOf`, M6 Issue 6), opens a socket
+/// there, signs in to [battleId], keeps the section's [view] from its
+/// whole view and updates, and sends commands, each answered by its
+/// request ID.
+/// When it loses the host it waits ([ClientSettings.backoff]), asks for a
+/// credential and the address again (the battle may have moved to another
+/// host), signs in again, takes its whole view, and resends every command
+/// that got no answer with its request ID: the host carries each out once
+/// (M6 Issue 5).
 ///
 /// It stops for good on a refused sign-in (but a battle not on this host,
-/// which may have moved, M6 Issue 6), on a goodbye for a battle that ended,
+/// which may have moved), on a lasting refusal to give the address
+/// ([HostLookupException.lasting]), on a goodbye for a battle that ended,
 /// a revoked key or a protocol version the host does not speak, and on
 /// [close]. A slow or idle client's goodbye is a lost host.
 ///
@@ -130,7 +138,7 @@ final class BattleClient {
   final ClientSettings settings;
 
   final Transport _transport;
-  final Future<Uri> Function() _address;
+  final Future<Uri> Function(Credential credential) _address;
   final Future<Credential> Function() _credential;
   final Clock _clock;
   final math.Random _random;
@@ -169,6 +177,10 @@ final class BattleClient {
   /// The refused sign-in or goodbye that stopped it.
   HostMessage? get stoppedBy => _stoppedBy;
   HostMessage? _stoppedBy;
+
+  /// The lasting refusal to give the host's address that stopped it.
+  HostLookupException? get lookupRefused => _lookupRefused;
+  HostLookupException? _lookupRefused;
 
   /// Completes once it stopped for good.
   Future<void> get stopped => _stopped.future;
@@ -261,9 +273,14 @@ final class BattleClient {
     final TransportSocket socket;
     final Credential credential;
     try {
-      final uri = await _address();
       credential = await _credential();
+      final uri = await _address(credential);
       socket = await _transport.connect(uri);
+    } on HostLookupException catch (refused) {
+      if (refused.lasting && _status != ClientStatus.stopped) {
+        _stop(null, lookup: refused);
+      }
+      return false;
     } on Object {
       return false;
     }
@@ -372,14 +389,17 @@ final class BattleClient {
     _statuses.add(status);
   }
 
-  void _stop(HostMessage? by) {
+  void _stop(HostMessage? by, {HostLookupException? lookup}) {
     _stoppedBy = by;
+    _lookupRefused = lookup;
     _heartbeat?.cancel();
     _wait?.cancel();
     if (_waited case final waited? when !waited.isCompleted) waited.complete();
     _setStatus(ClientStatus.stopped);
     for (final pending in _pending.values) {
-      pending.answer.completeError(ClientStoppedException(by));
+      pending.answer.completeError(
+        ClientStoppedException(by, lookupRefused: lookup),
+      );
     }
     _pending.clear();
     _stopped.complete();

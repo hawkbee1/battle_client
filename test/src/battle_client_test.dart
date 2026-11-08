@@ -36,7 +36,10 @@ final class _Harness {
     client = BattleClient(
       battleId: 'b-1',
       transport: transport,
-      address: () async {
+      address: (credential) async {
+        lookedUpWith.add(credential.secret);
+        if (lookup case final lookup?) return await lookup.future;
+        if (refusal case final refusal?) throw refusal;
         if (addressFails) throw StateError('no placement');
         return Uri.parse('ws://host-$addresses/v1/socket');
       },
@@ -58,6 +61,9 @@ final class _Harness {
   int credentials = 0;
   int addresses = 1;
   bool addressFails = false;
+  HostLookupException? refusal;
+  Completer<Uri>? lookup;
+  final lookedUpWith = <String>[];
 
   FakeSocket get socket => transport.last;
 
@@ -118,7 +124,7 @@ void main() {
         BattleClient(
           battleId: 'b-1',
           transport: transport,
-          address: () async => Uri.parse('ws://h/v1/socket'),
+          address: (_) async => Uri.parse('ws://h/v1/socket'),
           credential: () async => const Credential.apiKey('btk_secret'),
           clock: FakeClock(async),
           random: Random(1),
@@ -455,6 +461,33 @@ void main() {
         });
       });
 
+      test('M6 Issue 6 asks for the address with the credential of the '
+          'attempt, again while no host runs the battle', () {
+        fakeAsync((async) {
+          final h = _Harness(async)
+            ..refusal = const HostLookupException('no_host', status: 503);
+          h.client.start();
+          async.flushMicrotasks();
+          h.waitBackoff();
+
+          expect(h.client.status, equals(ClientStatus.waiting));
+          expect(h.transport.uris, isEmpty);
+
+          h
+            ..refusal = null
+            ..waitBackoff();
+
+          // Each attempt asks with the fresh JWT it got.
+          expect(h.lookedUpWith.length, greaterThan(2));
+          expect(
+            h.lookedUpWith,
+            equals([for (var i = 1; i <= h.lookedUpWith.length; i++) 'jwt-$i']),
+          );
+          expect(h.credentials, equals(h.lookedUpWith.length));
+          expect(h.transport.uris, hasLength(1));
+        });
+      });
+
       test('comes back after a broken socket or a frame it does not read', () {
         fakeAsync((async) {
           final h = _Harness(async)..signIn();
@@ -556,6 +589,65 @@ void main() {
           });
         });
       }
+
+      for (final (code, status) in [
+        ('not_your_battle', 403),
+        ('not_running', 409),
+        ('unknown_battle', 404),
+        ('user_jwt_invalid', 401),
+      ]) {
+        test('M6 Issue 6 when the address is refused for $code, failing its '
+            'unanswered commands', () {
+          fakeAsync((async) {
+            final h = _Harness(async)..signIn();
+            Object? failed;
+            h.client
+                .send(_reload)
+                .then(
+                  (_) {},
+                  onError: (Object e) {
+                    failed = e;
+                  },
+                );
+            h.refusal = HostLookupException(code, status: status);
+            h.socket.fail(StateError('reset by peer'));
+            async
+              ..flushMicrotasks()
+              ..elapse(const Duration(minutes: 5));
+
+            expect(h.client.status, equals(ClientStatus.stopped));
+            expect(h.client.stoppedBy, isNull);
+            expect(h.client.lookupRefused!.code, equals(code));
+            expect(
+              failed,
+              isA<ClientStoppedException>().having(
+                (e) => e.lookupRefused?.status,
+                'lookupRefused',
+                status,
+              ),
+            );
+            expect('$failed', contains(code));
+            expect(h.transport.sockets, hasLength(1));
+          });
+        });
+      }
+
+      test('when closed while it asks for the address', () {
+        fakeAsync((async) {
+          final h = _Harness(async)..lookup = Completer();
+          h.client.start();
+          async.flushMicrotasks();
+          h.client.close();
+          h.lookup!.completeError(
+            const HostLookupException('not_your_battle', status: 403),
+          );
+          async.elapse(const Duration(minutes: 5));
+
+          expect(h.client.status, equals(ClientStatus.stopped));
+          expect(h.client.lookupRefused, isNull);
+          expect(h.transport.sockets, isEmpty);
+        });
+      });
 
       test('when closed while signed in: the socket closes', () {
         fakeAsync((async) {

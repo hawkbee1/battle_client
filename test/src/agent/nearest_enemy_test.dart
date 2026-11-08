@@ -132,7 +132,7 @@ void main() {
         final client = BattleClient(
           battleId: 'b-1',
           transport: transport,
-          address: () async => Uri.parse('ws://h/v1/socket'),
+          address: (_) async => Uri.parse('ws://h/v1/socket'),
           credential: () async => const Credential.apiKey('btk_x'),
           clock: FakeClock(async),
           random: Random(1),

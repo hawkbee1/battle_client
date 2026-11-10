@@ -20,7 +20,8 @@ double apAt(ApView ap, Duration time) {
 /// the host sends at sign-in, then each tick's update applied to it. It
 /// holds what the host's view of the section holds (`SectionView`): the
 /// units the section knows, the HQs it sees, the relics, the victory
-/// countdown, its private state and the delta layer (MAP-08).
+/// countdown, its private state and the delta layer (MAP-08); and the
+/// `Roster` the host sends after it (M7.7).
 ///
 /// A unit is replaced whole when the host sends it whole (it came into
 /// sight, or its private state changed); a unit the section sees changes
@@ -56,6 +57,12 @@ final class HeldView {
   /// whole view does not hold it: a recall begun before the client's last
   /// sign-in is not known.
   Map<String, Duration> get recalls => UnmodifiableMapView(_recalls);
+
+  /// What the battle lets the section buy, as the host sent it after the
+  /// whole view (ECO-04, COMBAT-27, M7.7); null until it came. A resync
+  /// sends it again, and it replaces the one held.
+  Roster? get roster => _roster;
+  Roster? _roster;
 
   /// The running victory countdown (RELIC-16).
   HoldView? get hold => _hold;
@@ -105,6 +112,8 @@ final class HeldView {
         _whole(message);
       case TickUpdate():
         _update(message);
+      case Roster():
+        _roster = message;
       case SignInAccepted() ||
           SignInRefused() ||
           CommandAccepted() ||

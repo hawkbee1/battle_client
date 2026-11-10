@@ -112,6 +112,23 @@ void main() {
           expect(view.hold, equals(host.hold));
           expect(view.world, orderedEquals(host.world));
         });
+
+        test('ECO-04 UNIT-44 M7.7 $name holds the roster the host sent after '
+            'its whole view: prices, no commander, no test unit', () {
+          final messages = readStream(name);
+          final view = HeldView();
+          messages.forEach(view.apply);
+
+          expect(messages[1], isA<Roster>());
+          final types = view.roster!.units.map((unit) => unit.unitType);
+          expect(types, contains('soldier'));
+          expect(types, isNot(contains('commander')));
+          expect(types, isNot(contains('test_unit')));
+          expect(
+            view.roster!.weapons.map((weapon) => weapon.weapon),
+            contains('rifle'),
+          );
+        });
       }
     });
 
@@ -160,6 +177,32 @@ void main() {
       ].forEach(view.apply);
 
       expect(view.asSectionView, equals(before));
+    });
+
+    test('ECO-04 COMBAT-27 M7.7 the roster comes after the whole view and '
+        'is replaced by the next one; updates and views leave it', () {
+      const first = Roster(
+        units: [
+          RosterUnit(unitType: 'soldier', category: 'soldier', price: 100),
+        ],
+        weapons: [RosterWeapon(weapon: 'rifle', price: 100)],
+      );
+      const second = Roster(units: [], weapons: []);
+      final view = HeldView();
+
+      expect(view.roster, isNull);
+      view
+        ..apply(_whole())
+        ..apply(first);
+      expect(view.roster, equals(first));
+
+      view
+        ..apply(_tick())
+        ..apply(_whole());
+      expect(view.roster, equals(first));
+
+      view.apply(second);
+      expect(view.roster, equals(second));
     });
 
     test('decision 236 moves, units in and out of sight, HQs and relics', () {

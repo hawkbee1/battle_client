@@ -731,5 +731,187 @@ void main() {
         );
       });
     });
+
+    group('buy', () {
+      const soldier = RosterUnit(
+        unitType: 'soldier',
+        category: 'soldier',
+        price: 100,
+      );
+      const rifle = RosterWeapon(weapon: 'rifle', price: 100);
+
+      SectionPrivate section({int money = 500, Duration? lockedUntil}) =>
+          SectionPrivate(money: money, xp: 0, lockedUntil: lockedUntil);
+
+      /// [field] units on the field and [stored] in storage.
+      List<UnitView> owned({int field = 1, int stored = 0}) => [
+        for (var i = 0; i < field; i++) unit('f-$i'),
+        for (var i = 0; i < stored; i++) unit('s-$i', place: UnitPlace.stored),
+      ];
+
+      PreChecked buy(
+        RosterUnit type, {
+        SectionPrivate? holding,
+        Iterable<UnitView>? own,
+        Position? portal = _hq,
+        Iterable<UnitView> seen = const [],
+      }) => check.buyUnit(
+        unit: type,
+        section: holding ?? section(),
+        owned: own ?? owned(),
+        team: 'blue',
+        portal: portal,
+        seen: seen,
+        time: _now,
+      );
+
+      test('ECO-04 a section with the money and the room buys a unit', () {
+        expect(buy(soldier), const PreCheckPassed());
+      });
+
+      test('ECO-04 a price above the money is refused, the price itself '
+          'is paid', () {
+        expect(
+          buy(soldier, holding: section(money: 99)),
+          const PreCheckRefused(PreCheckRefusal.notEnoughMoney),
+        );
+        expect(
+          buy(soldier, holding: section(money: 100)),
+          isA<PreCheckPassed>(),
+        );
+      });
+
+      test('ECO-04 UNIT-39 a section with as many units on the field as its '
+          'cap has no room', () {
+        expect(buy(soldier, own: owned(field: 4)), isA<PreCheckPassed>());
+        expect(
+          buy(soldier, own: owned(field: 5)),
+          const PreCheckRefused(PreCheckRefusal.noRoom),
+        );
+      });
+
+      test('ECO-04 UNIT-40 units in storage count toward the units a section '
+          'may own, not toward its cap', () {
+        expect(
+          buy(soldier, own: owned(field: 4, stored: 5)),
+          isA<PreCheckPassed>(),
+        );
+        expect(
+          buy(soldier, own: owned(field: 4, stored: 6)),
+          const PreCheckRefused(PreCheckRefusal.noRoom),
+        );
+      });
+
+      test('UNIT-39 a carried unit is on the field; a prisoner is owned but '
+          'not active', () {
+        final carried = unit('c-1', place: UnitPlace.carried);
+        final captive = unit('p-1', place: UnitPlace.prisoner);
+
+        expect(
+          buy(soldier, own: [...owned(field: 4), carried]),
+          const PreCheckRefused(PreCheckRefusal.noRoom),
+        );
+        expect(
+          buy(soldier, own: [...owned(field: 4), captive]),
+          isA<PreCheckPassed>(),
+        );
+      });
+
+      test('HQ-47 the guild camp counts in no cap and takes no room', () {
+        const camp = RosterUnit(
+          unitType: 'encampment',
+          category: 'encampment',
+          price: 500,
+        );
+
+        expect(
+          buy(
+            camp,
+            own: [
+              ...owned(field: 4),
+              unit('e-1', type: 'encampment'),
+            ],
+          ),
+          isA<PreCheckPassed>(),
+        );
+        expect(
+          buy(
+            soldier,
+            own: [
+              ...owned(field: 4),
+              unit('e-1', type: 'encampment'),
+            ],
+          ),
+          isA<PreCheckPassed>(),
+        );
+      });
+
+      test('HQ-35 HQ-46 a locked section buys nothing until the lock ends', () {
+        expect(
+          buy(
+            soldier,
+            holding: section(lockedUntil: _now + const Duration(hours: 1)),
+          ),
+          const PreCheckRefused(PreCheckRefusal.sectionLocked),
+        );
+        expect(
+          buy(soldier, holding: section(lockedUntil: _now)),
+          isA<PreCheckPassed>(),
+        );
+      });
+
+      test('HQ-36 HQ-46 an enemy the section sees within 20 m of the portal '
+          'blocks the arrival; a friend, or one further, does not', () {
+        expect(
+          buy(soldier, seen: [enemy(x: 20, y: 0)]),
+          const PreCheckRefused(PreCheckRefusal.arrivalBlocked),
+        );
+        expect(buy(soldier, seen: [enemy(x: 21, y: 0)]), isA<PreCheckPassed>());
+        expect(
+          buy(soldier, seen: [unit('u-9', x: 5, y: 0)]),
+          isA<PreCheckPassed>(),
+        );
+        expect(
+          buy(soldier, portal: null, seen: [enemy(x: 1, y: 0)]),
+          isA<PreCheckPassed>(),
+        );
+      });
+
+      test('HQ-46 the host order of refusals: room, lock, enemy, money', () {
+        final locked = section(
+          money: 0,
+          lockedUntil: _now + const Duration(hours: 1),
+        );
+        final near = [enemy(x: 1, y: 0)];
+
+        expect(
+          buy(soldier, holding: locked, own: owned(field: 5), seen: near),
+          const PreCheckRefused(PreCheckRefusal.noRoom),
+        );
+        expect(
+          buy(soldier, holding: locked, seen: near),
+          const PreCheckRefused(PreCheckRefusal.sectionLocked),
+        );
+        expect(
+          buy(soldier, holding: section(money: 0), seen: near),
+          const PreCheckRefused(PreCheckRefusal.arrivalBlocked),
+        );
+        expect(
+          buy(soldier, holding: section(money: 0)),
+          const PreCheckRefused(PreCheckRefusal.notEnoughMoney),
+        );
+      });
+
+      test('COMBAT-27 a weapon needs the money only: no room, no lock', () {
+        expect(
+          check.buyWeapon(weapon: rifle, section: section(money: 100)),
+          const PreCheckPassed(),
+        );
+        expect(
+          check.buyWeapon(weapon: rifle, section: section(money: 99)),
+          const PreCheckRefused(PreCheckRefusal.notEnoughMoney),
+        );
+      });
+    });
   });
 }

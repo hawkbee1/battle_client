@@ -112,6 +112,23 @@ void main() {
           expect(view.hold, equals(host.hold));
           expect(view.world, orderedEquals(host.world));
         });
+
+        test('ECO-04 UNIT-44 M7.7 $name holds the roster the host sent after '
+            'its whole view: prices, no commander, no test unit', () {
+          final messages = readStream(name);
+          final view = HeldView();
+          messages.forEach(view.apply);
+
+          expect(messages[1], isA<Roster>());
+          final types = view.roster!.units.map((unit) => unit.unitType);
+          expect(types, contains('soldier'));
+          expect(types, isNot(contains('commander')));
+          expect(types, isNot(contains('test_unit')));
+          expect(
+            view.roster!.weapons.map((weapon) => weapon.weapon),
+            contains('rifle'),
+          );
+        });
       }
     });
 

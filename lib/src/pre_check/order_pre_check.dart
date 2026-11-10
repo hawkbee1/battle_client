@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:battle_client/src/held_view.dart';
 import 'package:battle_protocol/battle_protocol.dart';
 import 'package:battle_rules/battle_rules.dart'
-    show CombatData, UnitsData, WeaponType;
+    show CombatData, StorageSettings, UnitsData, WeaponType;
 import 'package:equatable/equatable.dart';
 
 /// Why the client expects the host to refuse an order. Every [code] is the
@@ -44,7 +44,28 @@ enum PreCheckRefusal {
   notInStorage('not_in_storage'),
 
   /// The unit is not next to its storage place (COMBAT-28).
-  notAtStorage('not_at_storage');
+  notAtStorage('not_at_storage'),
+
+  /// Only a stored unit deploys (HQ-33).
+  notStored('not_stored'),
+
+  /// A prisoner buys nothing and is not deployed (COMBAT-43).
+  isPrisoner('is_prisoner'),
+
+  /// The section is under its full storage lock (HQ-35).
+  sectionLocked('section_locked'),
+
+  /// An enemy the section sees is near the storage place (HQ-36, HQ-39).
+  blockedByEnemy('blocked_by_enemy'),
+
+  /// The guild camp is never stored by order (HQ-30, HQ-47).
+  neverStored('never_stored'),
+
+  /// A transport is stored empty: unload it first (HQ-49).
+  carriesUnits('carries_units'),
+
+  /// The unit's recall runs already (HQ-32).
+  alreadyRecalled('already_recalled');
 
   new(this.code);
 
@@ -91,6 +112,55 @@ final class PreCheckRefused extends PreChecked {
   List<Object?> get props => [reason];
 }
 
+/// {@template store_plan}
+/// What a store order does, as the client expects it (HQ-31, HQ-32): the
+/// button says which before the order is sent.
+/// {@endtemplate}
+sealed class StorePlan extends Equatable {
+  /// {@macro store_plan}
+  const new();
+}
+
+/// {@template stored_at_once}
+/// The unit is next to its storage place: it is stored at once (HQ-31).
+/// {@endtemplate}
+final class StoredNow extends StorePlan {
+  /// {@macro stored_at_once}
+  const new();
+
+  @override
+  List<Object?> get props => [];
+}
+
+/// {@template recalled_after}
+/// The unit is elsewhere: it is recalled and stored after [takes] (HQ-32).
+/// Nothing stops a recall once started.
+/// {@endtemplate}
+final class RecalledAfter extends StorePlan {
+  /// {@macro recalled_after}
+  const new(this.takes);
+
+  /// How long the recall takes.
+  final Duration takes;
+
+  @override
+  List<Object?> get props => [takes];
+}
+
+/// {@template store_not_possible}
+/// The client expects the host to refuse the order, for [reason].
+/// {@endtemplate}
+final class StoreNotPossible extends StorePlan {
+  /// {@macro store_not_possible}
+  const new(this.reason);
+
+  /// Why.
+  final PreCheckRefusal reason;
+
+  @override
+  List<Object?> get props => [reason];
+}
+
 /// {@template order_pre_check}
 /// The order pre-check of M7 Issue 5 (stack decision 8): range, rounds, AP
 /// and the weapon handling rules, from `battle_rules`' data and the section's
@@ -106,11 +176,7 @@ final class PreCheckRefused extends PreChecked {
 /// {@endtemplate}
 final class OrderPreCheck {
   /// {@macro order_pre_check}
-  const new({
-    required this.combat,
-    required this.units,
-    required this.storeRadiusM,
-  });
+  const new({required this.combat, required this.units, required this.storage});
 
   /// The weapons (`combat.yaml`).
   final CombatData combat;
@@ -118,9 +184,13 @@ final class OrderPreCheck {
   /// The unit types (`units.yaml`).
   final UnitsData units;
 
-  /// How close to its storage place a unit swaps its weapon, in metres
-  /// (`storage.store_radius_m` of `battle.yaml`, COMBAT-28).
-  final double storeRadiusM;
+  /// The storage numbers (`storage` of `battle.yaml`): the radius within
+  /// which a unit is stored at once and swaps its weapon (HQ-31, COMBAT-28),
+  /// the recall time, the deploy cost and the radius an enemy blocks.
+  final StorageSettings storage;
+
+  /// How close to its storage place a unit swaps its weapon, in metres.
+  double get storeRadiusM => storage.storeRadiusM;
 
   /// The weapon type [id] of `combat.yaml`; null for none or one this client's
   /// data does not know.
@@ -241,11 +311,17 @@ final class OrderPreCheck {
     if (private.rounds == 0) {
       return const PreCheckRefused(PreCheckRefusal.emptyMagazine);
     }
-    final ap = private.ap;
-    if (weapon.apPerShot > ap.max) {
+    return _paid(private.ap, weapon.apPerShot, time);
+  }
+
+  /// A payment of [cost] AP from [ap] at [time]: refused when the pool can
+  /// never hold it, else passed, with the wait for the AP it lacks
+  /// (COMBAT-06).
+  PreChecked _paid(ApView ap, double cost, Duration time) {
+    if (cost > ap.max) {
       return const PreCheckRefused(PreCheckRefusal.costAboveApMax);
     }
-    final missing = weapon.apPerShot - apAt(ap, time);
+    final missing = cost - apAt(ap, time);
     if (missing <= 0) return const PreCheckPassed();
     return PreCheckPassed(
       apWait: Duration(
@@ -253,6 +329,74 @@ final class OrderPreCheck {
             .round(),
       ),
     );
+  }
+
+  /// [unit] stored at once, or recalled from afar (HQ-31, HQ-32, HQ-49).
+  /// [portal] is the position of its storage place when the section sees
+  /// it; [units] the section's units, to know whether a transport carries
+  /// any; [recalledUntil] the end of its recall when one runs.
+  StorePlan store({
+    required UnitView unit,
+    required Position? portal,
+    required Iterable<UnitView> units,
+    required Duration time,
+    Duration? recalledUntil,
+  }) {
+    if (!_onField(unit)) {
+      return const StoreNotPossible(PreCheckRefusal.notOnField);
+    }
+    if (this.units.unitTypes[unit.unitType]?.storable == false) {
+      return const StoreNotPossible(PreCheckRefusal.neverStored);
+    }
+    if (units.any((other) => other.private?.transportId == unit.unitId)) {
+      return const StoreNotPossible(PreCheckRefusal.carriesUnits);
+    }
+    if (portal != null &&
+        _distanceM(unit.position!, portal) <= storage.storeRadiusM) {
+      return const StoredNow();
+    }
+    if (recalledUntil != null && recalledUntil > time) {
+      return const StoreNotPossible(PreCheckRefusal.alreadyRecalled);
+    }
+    return RecalledAfter(
+      Duration(microseconds: (storage.recallS * 1e6).round()),
+    );
+  }
+
+  /// [unit], stored, deployed next to the storage place at [portal], for
+  /// `deploy_ap` (HQ-33). [lockedUntil] is the end of the section's lock
+  /// (HQ-35); [seen] the units its section sees, among which an enemy within
+  /// `deploy_block_radius_m` of the portal blocks it (HQ-36, HQ-39). An
+  /// enemy the section does not see blocks it all the same: the host's
+  /// refusal then shows, and the client gives no clue before (decision 237).
+  /// Like any paid action it waits for the AP it lacks (COMBAT-06).
+  PreChecked deploy({
+    required UnitView unit,
+    required Position? portal,
+    required Iterable<UnitView> seen,
+    required Duration time,
+    Duration? lockedUntil,
+  }) {
+    final private = unit.private;
+    if (private?.place == UnitPlace.prisoner) {
+      return const PreCheckRefused(PreCheckRefusal.isPrisoner);
+    }
+    if (private == null || private.place != UnitPlace.stored) {
+      return const PreCheckRefused(PreCheckRefusal.notStored);
+    }
+    if (lockedUntil != null && time < lockedUntil) {
+      return const PreCheckRefused(PreCheckRefusal.sectionLocked);
+    }
+    if (portal != null &&
+        seen.any(
+          (other) =>
+              other.team != unit.team &&
+              other.position != null &&
+              _distanceM(other.position!, portal) <= storage.deployBlockRadiusM,
+        )) {
+      return const PreCheckRefused(PreCheckRefusal.blockedByEnemy);
+    }
+    return _paid(private.ap, storage.deployAp, time);
   }
 
   static double _distanceM(Position a, Position b) {

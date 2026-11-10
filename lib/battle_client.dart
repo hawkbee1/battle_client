@@ -18,4 +18,5 @@ export 'src/credential.dart';
 export 'src/held_view.dart';
 export 'src/ports/clock.dart';
 export 'src/ports/transport.dart';
+export 'src/pre_check/order_pre_check.dart';
 export 'src/request_ids.dart';

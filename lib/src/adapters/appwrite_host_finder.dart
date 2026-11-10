@@ -4,6 +4,7 @@ import 'package:battle_client/src/credential.dart';
 import 'package:battle_protocol/battle_protocol.dart';
 import 'package:hawkbee_schema/hawkbee_schema.dart';
 import 'package:http/http.dart' as http;
+import 'package:logging/logging.dart';
 
 /// {@template host_lookup_exception}
 /// Why a client got no address for its battle's host (M6 Issue 6): the
@@ -70,6 +71,8 @@ final class AppwriteHostFinder {
 
   final http.Client _client;
 
+  static final _log = Logger('battle_client.AppwriteHostFinder');
+
   /// The socket of the host that runs [battleId], for [credential].
   ///
   /// Throws a [HostLookupException] when Appwrite or the function answers
@@ -77,6 +80,9 @@ final class AppwriteHostFinder {
   /// read.
   Future<Uri> socketOf(String battleId, Credential credential) async {
     final base = endpoint.toString();
+    _log.fine(
+      'asking for the host of $battleId with a ${credential.kind.name}',
+    );
     final response = await _client.post(
       Uri.parse(
         '${base.endsWith('/') ? base : '$base/'}functions/'
@@ -112,10 +118,12 @@ final class AppwriteHostFinder {
         status: status is int ? status : 500,
       );
     }
-    return switch (body['address']) {
-      final String address => socketAddress(address),
-      _ => throw FormatException('no address', answer['responseBody']),
-    };
+    final address = body['address'];
+    if (address is! String) {
+      throw FormatException('no address', answer['responseBody']);
+    }
+    _log.fine('the host answered');
+    return socketAddress(address);
   }
 
   /// Closes its HTTP client.

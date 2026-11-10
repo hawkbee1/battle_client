@@ -9,6 +9,7 @@ import 'package:battle_client/src/ports/clock.dart';
 import 'package:battle_client/src/ports/transport.dart';
 import 'package:battle_client/src/request_ids.dart';
 import 'package:battle_protocol/battle_protocol.dart';
+import 'package:logging/logging.dart';
 
 /// {@template client_settings}
 /// A client's timings (stack decision 3): the host closes a socket silent
@@ -118,6 +119,12 @@ final class ClientStoppedException implements Exception {
 ///
 /// The client checks nothing: the host checks every order (stack
 /// decision 8). The order pre-check with `battle_rules` is M7's.
+///
+/// It logs its lifecycle on the `battle_client.BattleClient` logger: attempts,
+/// credential kind, host address, socket and sign-in, refusals, the end of a
+/// socket and the wait before the next attempt. Never a secret, and nothing
+/// of what the section does not see (decision 237): no message's content.
+/// The library only logs; the app sets the levels and prints.
 /// {@endtemplate}
 final class BattleClient {
   /// {@macro battle_client}
@@ -145,6 +152,7 @@ final class BattleClient {
   final RequestIds _ids;
 
   static const _codec = BinaryProtocolCodec();
+  static final _log = Logger('battle_client.BattleClient');
 
   /// The section's view.
   final view = HeldView();
@@ -234,7 +242,15 @@ final class BattleClient {
     );
     final pending = _Pending(message);
     _pending[message.requestId] = pending;
-    if (_status == ClientStatus.signedIn) _send(message);
+    if (_status == ClientStatus.signedIn) {
+      _log.info('command ${message.requestId} sent: ${order.runtimeType}');
+      _send(message);
+    } else {
+      _log.info(
+        'command ${message.requestId} held until sign-in: '
+        '${order.runtimeType}',
+      );
+    }
     return pending.answer.future;
   }
 
@@ -254,16 +270,17 @@ final class BattleClient {
 
   Future<void> _run() async {
     var attempt = 0;
+    var attempts = 0;
     while (_status != ClientStatus.stopped) {
       _setStatus(ClientStatus.connecting);
+      _log.info('connecting (attempt ${++attempts})');
       if (await _session()) attempt = 0;
       if (_status == ClientStatus.stopped) return;
       _setStatus(ClientStatus.waiting);
       final waited = _waited = Completer<void>();
-      _wait = Timer(
-        settings.backoff.delay(attempt++, _random),
-        waited.complete,
-      );
+      final delay = settings.backoff.delay(attempt++, _random);
+      _log.info('host lost, retry in ${delay.inMilliseconds / 1000} s');
+      _wait = Timer(delay, waited.complete);
       await waited.future;
     }
   }
@@ -274,14 +291,19 @@ final class BattleClient {
     final Credential credential;
     try {
       credential = await _credential();
+      _log.info('credential ${credential.kind.name}');
       final uri = await _address(credential);
+      _log.info('host address $uri');
       socket = await _transport.connect(uri);
+      _log.info('socket open');
     } on HostLookupException catch (refused) {
+      _log.warning('host lookup refused: $refused');
       if (refused.lasting && _status != ClientStatus.stopped) {
         _stop(null, lookup: refused);
       }
       return false;
-    } on Object {
+    } on Object catch (error, stackTrace) {
+      _log.severe('connecting failed', error, stackTrace);
       return false;
     }
     if (_status == ClientStatus.stopped) {
@@ -291,8 +313,11 @@ final class BattleClient {
     _socket = socket;
     var signedIn = false;
     final ended = Completer<void>();
-    void end([Object? _]) {
-      if (!ended.isCompleted) ended.complete();
+    var reason = '';
+    void end(String why) {
+      if (ended.isCompleted) return;
+      reason = why;
+      ended.complete();
     }
 
     // A broken socket, a frame the client does not read, or a message that
@@ -300,17 +325,31 @@ final class BattleClient {
     final frames = socket.frames.listen(
       (frame) {
         if (ended.isCompleted) return;
+        final HostMessage message;
         try {
-          final message = _codec.decodeHostMessage(frame);
-          if (message is SignInAccepted) signedIn = true;
-          if (_handle(message)) return;
-        } on ProtocolException {
-          // Ends the socket below.
+          message = _codec.decodeHostMessage(frame);
+        } on ProtocolException catch (error) {
+          _log.warning('unreadable frame: $error');
+          end('unreadable frame');
+          return;
         }
-        end();
+        if (message is SignInAccepted) signedIn = true;
+        if (_handle(message)) return;
+        end(switch (message) {
+          SignInRefused(reason: final why) => 'sign-in refused ${why.name}',
+          Goodbye(reason: final why) => 'goodbye ${why.name}',
+          _ => 'client stopped',
+        });
       },
-      onError: end,
-      onDone: end,
+      onError: (Object error, StackTrace stackTrace) {
+        _log.severe('socket failed', error, stackTrace);
+        end('socket failed');
+      },
+      onDone: () => end(
+        _status == ClientStatus.stopped
+            ? 'client closed'
+            : 'closed by the host',
+      ),
       cancelOnError: true,
     );
     socket.send(
@@ -323,6 +362,7 @@ final class BattleClient {
       ),
     );
     await ended.future;
+    _log.info('socket closed: $reason');
     unawaited(frames.cancel());
     _heartbeat?.cancel();
     if (identical(_socket, socket)) _socket = null;
@@ -337,11 +377,13 @@ final class BattleClient {
     var keep = true;
     switch (message) {
       case SignInAccepted(:final accountId, :final sectionId, :final team):
+        _log.info('sign-in accepted');
         _seat = (accountId: accountId, sectionId: sectionId, team: team);
         _heard(message.battleTime);
         // Before the status changes, so that a command its listeners send
         // goes out once.
         for (final pending in _pending.values) {
+          _log.info('command ${pending.message.requestId} resent');
           _send(pending.message);
         }
         _setStatus(ClientStatus.signedIn);
@@ -350,6 +392,7 @@ final class BattleClient {
           (_) => _send(const Heartbeat()),
         );
       case SignInRefused(:final reason):
+        _log.warning('sign-in refused ${reason.name}');
         keep = false;
         if (reason != SignInRefusal.battleNotFound) _stop(message);
       case SectionView(:final at) || TickUpdate(:final at):
@@ -357,8 +400,10 @@ final class BattleClient {
       case RelicAlert(:final at):
         _heard(at);
       case CommandAccepted(:final requestId, :final seq):
+        _log.info('command $requestId accepted');
         _answer(CommandAnswer(requestId: requestId, seq: seq));
       case CommandRefused(:final requestId, :final reason):
+        _log.warning('command $requestId refused $reason');
         _answer(CommandAnswer(requestId: requestId, refusal: reason));
       case Goodbye(:final reason):
         keep = false;
@@ -390,6 +435,7 @@ final class BattleClient {
   }
 
   void _stop(HostMessage? by, {HostLookupException? lookup}) {
+    _log.info('stopped');
     _stoppedBy = by;
     _lookupRefused = lookup;
     _heartbeat?.cancel();

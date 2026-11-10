@@ -162,6 +162,32 @@ void main() {
       expect(view.asSectionView, equals(before));
     });
 
+    test('ECO-04 COMBAT-27 M7.7 the roster comes after the whole view and '
+        'is replaced by the next one; updates and views leave it', () {
+      const first = Roster(
+        units: [
+          RosterUnit(unitType: 'soldier', category: 'soldier', price: 100),
+        ],
+        weapons: [RosterWeapon(weapon: 'rifle', price: 100)],
+      );
+      const second = Roster(units: [], weapons: []);
+      final view = HeldView();
+
+      expect(view.roster, isNull);
+      view
+        ..apply(_whole())
+        ..apply(first);
+      expect(view.roster, equals(first));
+
+      view
+        ..apply(_tick())
+        ..apply(_whole());
+      expect(view.roster, equals(first));
+
+      view.apply(second);
+      expect(view.roster, equals(second));
+    });
+
     test('decision 236 moves, units in and out of sight, HQs and relics', () {
       final view = HeldView()
         ..apply(_whole(units: [_unit('a'), _unit('b')]))

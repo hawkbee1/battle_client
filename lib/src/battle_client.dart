@@ -399,6 +399,8 @@ final class BattleClient {
         _heard(at);
       case RelicAlert(:final at):
         _heard(at);
+      case Roster():
+        break;
       case CommandAccepted(:final requestId, :final seq):
         _log.info('command $requestId accepted');
         _answer(CommandAnswer(requestId: requestId, seq: seq));

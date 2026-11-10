@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:battle_client/src/held_view.dart';
 import 'package:battle_protocol/battle_protocol.dart';
 import 'package:battle_rules/battle_rules.dart'
-    show CombatData, StorageSettings, UnitsData, WeaponType;
+    show CombatData, SectionLevel, StorageSettings, UnitsData, WeaponType;
 import 'package:equatable/equatable.dart';
 
 /// Why the client expects the host to refuse an order. Every [code] is the
@@ -57,6 +57,15 @@ enum PreCheckRefusal {
 
   /// An enemy the section sees is near the storage place (HQ-36, HQ-39).
   blockedByEnemy('blocked_by_enemy'),
+
+  /// The section has no free room for one more unit (ECO-04, decision 130).
+  noRoom('no_room'),
+
+  /// An enemy the section sees blocks the arrival of a bought unit (HQ-46).
+  arrivalBlocked('arrival_blocked'),
+
+  /// The section's money does not pay the price (ECO-04, COMBAT-27).
+  notEnoughMoney('not_enough_money'),
 
   /// The guild camp is never stored by order (HQ-30, HQ-47).
   neverStored('never_stored'),
@@ -397,6 +406,81 @@ final class OrderPreCheck {
       return const PreCheckRefused(PreCheckRefusal.blockedByEnemy);
     }
     return _paid(private.ap, storage.deployAp, time);
+  }
+
+  /// The section buys the unit type [unit] of the host's `Roster` (ECO-04,
+  /// ECO-05, HQ-46), in the host's order of refusals: no room (UNIT-39,
+  /// UNIT-40, from the section's [owned] units and its XP), the lock
+  /// (HQ-35), an enemy of another [team] [seen] near the [portal] (HQ-36), then
+  /// the money. The
+  /// price is the roster's; no number of the plan is read here. Like
+  /// [deploy], it cannot know an enemy the section does not see.
+  PreChecked buyUnit({
+    required RosterUnit unit,
+    required SectionPrivate section,
+    required Iterable<UnitView> owned,
+    required String team,
+    required Position? portal,
+    required Iterable<UnitView> seen,
+    required Duration time,
+  }) {
+    if (!_hasRoom(unit.unitType, section, owned)) {
+      return const PreCheckRefused(PreCheckRefusal.noRoom);
+    }
+    final lockedUntil = section.lockedUntil;
+    if (lockedUntil != null && time < lockedUntil) {
+      return const PreCheckRefused(PreCheckRefusal.sectionLocked);
+    }
+    if (portal != null &&
+        seen.any(
+          (other) =>
+              other.team != team &&
+              other.position != null &&
+              _distanceM(other.position!, portal) <= storage.deployBlockRadiusM,
+        )) {
+      return const PreCheckRefused(PreCheckRefusal.arrivalBlocked);
+    }
+    return _afford(unit.price, section);
+  }
+
+  /// The section buys [weapon] of the host's `Roster` for its storage
+  /// (COMBAT-27): money only, no room needed.
+  PreChecked buyWeapon({
+    required RosterWeapon weapon,
+    required SectionPrivate section,
+  }) => _afford(weapon.price, section);
+
+  PreChecked _afford(int price, SectionPrivate section) => price > section.money
+      ? const PreCheckRefused(PreCheckRefusal.notEnoughMoney)
+      : const PreCheckPassed();
+
+  /// UNIT-39 and UNIT-40: the units that count toward the cap, on the field
+  /// and owned, against the cap at the commander's level. A type this
+  /// client's data does not know counts as one that counts.
+  bool _hasRoom(
+    String unitType,
+    SectionPrivate section,
+    Iterable<UnitView> owned,
+  ) {
+    if (units.unitTypes[unitType]?.countsInSectionCap == false) return true;
+    final counted = [
+      for (final unit in owned)
+        if (unit.private != null &&
+            units.unitTypes[unit.unitType]?.countsInSectionCap != false)
+          unit,
+    ];
+    final levels = SectionLevel(units.progression);
+    return levels.hasRoom(
+      level: levels.levelFor(section.xp),
+      active: counted
+          .where(
+            (unit) =>
+                unit.private!.place == UnitPlace.deployed ||
+                unit.private!.place == UnitPlace.carried,
+          )
+          .length,
+      owned: counted.length,
+    );
   }
 
   static double _distanceM(Position a, Position b) {

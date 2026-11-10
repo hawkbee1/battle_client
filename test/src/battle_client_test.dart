@@ -184,6 +184,27 @@ void main() {
       });
     });
 
+    test('ECO-04 M7.7 the roster is held and passed on, and says nothing of '
+        'the battle time', () {
+      fakeAsync((async) {
+        final h = _Harness(async)..signIn();
+        const roster = Roster(
+          units: [
+            RosterUnit(unitType: 'soldier', category: 'soldier', price: 100),
+          ],
+          weapons: [RosterWeapon(weapon: 'rifle', price: 100)],
+        );
+        final before = h.client.battleTime;
+
+        h.socket.deliver(roster);
+        async.flushMicrotasks();
+
+        expect(h.client.view.roster, equals(roster));
+        expect(h.messages.last, equals(roster));
+        expect(h.client.battleTime, equals(before));
+      });
+    });
+
     test('MAP-08 keeps the view from the whole view and the updates', () {
       fakeAsync((async) {
         final h = _Harness(async)..signIn();

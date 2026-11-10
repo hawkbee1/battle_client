@@ -38,6 +38,7 @@ final class HeldView {
   final _built = <String, StructureBuilt>{};
   final _damaged = <String, ObjectDamaged>{};
   final _destroyed = <String, ObjectDestroyed>{};
+  final _recalls = <String, Duration>{};
 
   /// The battle time of the last view or update.
   Duration? get at => _at;
@@ -49,6 +50,12 @@ final class HeldView {
   /// The section's own state.
   SectionPrivate? get section => _section;
   SectionPrivate? _section;
+
+  /// The recalls the section's units run (HQ-32): the battle time each is
+  /// stored, by unit ID. The host tells it once, with `RecallBegan`, and the
+  /// whole view does not hold it: a recall begun before the client's last
+  /// sign-in is not known.
+  Map<String, Duration> get recalls => UnmodifiableMapView(_recalls);
 
   /// The running victory countdown (RELIC-16).
   HoldView? get hold => _hold;
@@ -121,6 +128,7 @@ final class HeldView {
     _relics
       ..clear()
       ..addEntries(view.relics.map((relic) => MapEntry(relic.relicId, relic)));
+    _recalls.clear();
     _craters.clear();
     _built.clear();
     _damaged.clear();
@@ -142,6 +150,7 @@ final class HeldView {
       whole.add(unit.unitId);
     }
     update.gone.forEach(_units.remove);
+    _recalls.removeWhere((unitId, _) => !_units.containsKey(unitId));
     for (final event in update.events) {
       _event(event, update.at, whole);
     }
@@ -173,6 +182,10 @@ final class HeldView {
         if (_units[id] case final unit? when !whole.contains(id)) {
           _units[id] = _with(unit, hp: hp);
         }
+      case RecallBegan(:final unitId, :final storedAt):
+        _recalls[unitId] = storedAt;
+      case UnitStored(:final unitId) || UnitDeployed(:final unitId):
+        _recalls.remove(unitId);
       case VictoryHoldStarted(:final team, :final winsAt):
         _hold = HoldView(team: team, since: at, winsAt: winsAt);
       case VictoryHoldReset():

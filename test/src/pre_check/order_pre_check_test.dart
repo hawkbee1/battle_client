@@ -65,6 +65,9 @@ UnitView enemy({double x = 200, double y = 100, bool flying = false}) =>
 
 const _now = Duration(hours: 1);
 
+/// The section's storage place: its HQ.
+const _hq = Position(0, 0, 0);
+
 void main() {
   late OrderPreCheck check;
 
@@ -72,9 +75,7 @@ void main() {
     check = OrderPreCheck(
       combat: CombatData.parse(_plan('combat.yaml')),
       units: UnitsData.parse(_plan('units.yaml')),
-      storeRadiusM: BattleSettings.parse(_plan('battle.yaml'))
-          .storage
-          .storeRadiusM,
+      storage: BattleSettings.parse(_plan('battle.yaml')).storage,
     );
   });
 
@@ -501,6 +502,234 @@ void main() {
         const PreCheckRefused(PreCheckRefusal.noWeapon),
         isNot(const PreCheckRefused(PreCheckRefusal.outOfRange)),
       );
+    });
+
+    group('store', () {
+      StorePlan store(
+        UnitView subject, {
+        Position? portal = _hq,
+        Iterable<UnitView> others = const [],
+        Duration? recalledUntil,
+      }) => check.store(
+        unit: subject,
+        portal: portal,
+        units: [subject, ...others],
+        time: _now,
+        recalledUntil: recalledUntil,
+      );
+
+      test('HQ-31 a unit within store_radius_m of its portal is stored at '
+          'once', () {
+        // The radius is 10 m.
+        expect(store(unit('u-1', x: 9, y: 0)), const StoredNow());
+        expect(store(unit('u-1', x: 10, y: 0)), const StoredNow());
+      });
+
+      test('HQ-32 a unit farther is recalled for recall_s', () {
+        expect(
+          store(unit('u-1', x: 11, y: 0)),
+          const RecalledAfter(Duration(hours: 6)),
+        );
+      });
+
+      test('HQ-32 a portal the section does not see leaves the recall', () {
+        expect(
+          store(unit('u-1', x: 1, y: 0), portal: null),
+          const RecalledAfter(Duration(hours: 6)),
+        );
+      });
+
+      test('HQ-32 a recall that runs is not ordered again', () {
+        expect(
+          store(
+            unit('u-1', x: 50, y: 0),
+            recalledUntil: _now + const Duration(hours: 2),
+          ),
+          const StoreNotPossible(PreCheckRefusal.alreadyRecalled),
+        );
+        // An end in the past is no recall.
+        expect(
+          store(unit('u-1', x: 50, y: 0), recalledUntil: Duration.zero),
+          const RecalledAfter(Duration(hours: 6)),
+        );
+        // Within the radius it is stored at once, recall or not.
+        expect(
+          store(
+            unit('u-1', x: 1, y: 0),
+            recalledUntil: _now + const Duration(hours: 2),
+          ),
+          const StoredNow(),
+        );
+      });
+
+      test('HQ-30 the guild camp is never stored by order', () {
+        expect(
+          store(unit('u-1', type: 'encampment', x: 1, y: 0)),
+          const StoreNotPossible(PreCheckRefusal.neverStored),
+        );
+      });
+
+      test('HQ-49 a transport that carries units is not stored', () {
+        final passenger = unit('u-2', place: UnitPlace.carried);
+        final carried = UnitView(
+          unitId: passenger.unitId,
+          unitType: passenger.unitType,
+          sectionId: passenger.sectionId,
+          team: passenger.team,
+          hp: 100,
+          maxHp: 100,
+          private: UnitPrivate(
+            place: UnitPlace.carried,
+            ap: passenger.private!.ap,
+            morale: 50,
+            rounds: 0,
+            xpEarned: 0,
+            xpUnspent: 0,
+            transportId: 'u-1',
+          ),
+        );
+        expect(
+          store(unit('u-1', x: 1, y: 0), others: [carried]),
+          const StoreNotPossible(PreCheckRefusal.carriesUnits),
+        );
+      });
+
+      test('HQ-31 a unit not on the field is refused', () {
+        expect(
+          store(unit('u-1', place: UnitPlace.stored)),
+          const StoreNotPossible(PreCheckRefusal.notOnField),
+        );
+      });
+
+      test('store plans compare by what they say', () {
+        expect(
+          const RecalledAfter(Duration(hours: 1)),
+          isNot(const RecalledAfter(Duration(hours: 2))),
+        );
+        // Built at run time, so that they are two objects, not one constant.
+        // ignore: prefer_const_constructors
+        expect(StoredNow(), StoredNow());
+        expect(const StoredNow(), isNot(const RecalledAfter(Duration.zero)));
+        final reason = PreCheckRefusal.values.byName('neverStored');
+        expect(StoreNotPossible(reason), StoreNotPossible(reason));
+        expect(
+          StoreNotPossible(reason).hashCode,
+          StoreNotPossible(reason).hashCode,
+        );
+      });
+    });
+
+    group('deploy', () {
+      PreChecked deploy(
+        UnitView subject, {
+        Position? portal = _hq,
+        Iterable<UnitView> seen = const [],
+        Duration? lockedUntil,
+        Duration time = _now,
+      }) => check.deploy(
+        unit: subject,
+        portal: portal,
+        seen: seen,
+        time: time,
+        lockedUntil: lockedUntil,
+      );
+
+      test('HQ-33 a stored unit with 10 AP deploys', () {
+        expect(
+          deploy(unit('u-1', place: UnitPlace.stored)),
+          const PreCheckPassed(),
+        );
+      });
+
+      test('HQ-33 a unit short of the deploy AP waits for them', () {
+        // 4 AP at 1 AP an hour: 6 AP short, 6 hours.
+        expect(
+          deploy(unit('u-1', place: UnitPlace.stored, ap: 4)),
+          const PreCheckPassed(apWait: Duration(hours: 6)),
+        );
+        // A recovered pool does not wait, an hour later.
+        expect(
+          deploy(
+            unit('u-1', place: UnitPlace.stored, ap: 9),
+            time: _now + const Duration(hours: 1),
+          ),
+          const PreCheckPassed(),
+        );
+      });
+
+      test('HQ-33 a pool that never holds deploy_ap refuses', () {
+        expect(
+          deploy(unit('u-1', place: UnitPlace.stored, ap: 5, apMax: 5)),
+          const PreCheckRefused(PreCheckRefusal.costAboveApMax),
+        );
+      });
+
+      test('HQ-33 only a stored unit deploys', () {
+        expect(
+          deploy(unit('u-1')),
+          const PreCheckRefused(PreCheckRefusal.notStored),
+        );
+        expect(
+          deploy(enemy()),
+          const PreCheckRefused(PreCheckRefusal.notStored),
+        );
+      });
+
+      test('COMBAT-43 a prisoner is not deployed', () {
+        expect(
+          deploy(unit('u-1', place: UnitPlace.prisoner)),
+          const PreCheckRefused(PreCheckRefusal.isPrisoner),
+        );
+      });
+
+      test('HQ-35 a locked section does not deploy until the lock ends', () {
+        final stored = unit('u-1', place: UnitPlace.stored);
+        expect(
+          deploy(stored, lockedUntil: _now + const Duration(hours: 1)),
+          const PreCheckRefused(PreCheckRefusal.sectionLocked),
+        );
+        expect(deploy(stored, lockedUntil: _now), const PreCheckPassed());
+        expect(
+          deploy(stored, lockedUntil: Duration.zero),
+          const PreCheckPassed(),
+        );
+      });
+
+      test('HQ-36 a seen enemy within 20 m of the portal blocks', () {
+        final stored = unit('u-1', place: UnitPlace.stored);
+        expect(
+          deploy(stored, seen: [enemy(x: 20, y: 0)]),
+          const PreCheckRefused(PreCheckRefusal.blockedByEnemy),
+        );
+        expect(
+          deploy(stored, seen: [enemy(x: 21, y: 0)]),
+          const PreCheckPassed(),
+        );
+      });
+
+      test('HQ-36 a friend near the portal, or an enemy off the field, '
+          'blocks nothing', () {
+        final stored = unit('u-1', place: UnitPlace.stored);
+        expect(
+          deploy(stored, seen: [unit('u-2', x: 5, y: 0)]),
+          const PreCheckPassed(),
+        );
+        expect(
+          deploy(stored, seen: [unit('u-2', place: UnitPlace.stored)]),
+          const PreCheckPassed(),
+        );
+      });
+
+      test('HQ-39 a portal the section does not see blocks nothing here', () {
+        expect(
+          deploy(
+            unit('u-1', place: UnitPlace.stored),
+            portal: null,
+            seen: [enemy(x: 1, y: 0)],
+          ),
+          const PreCheckPassed(),
+        );
+      });
     });
   });
 }

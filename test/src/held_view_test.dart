@@ -293,6 +293,63 @@ void main() {
       expect(view.units, hasLength(2));
     });
 
+    test('HQ-32 a recall is held until the unit is stored or deployed, '
+        'gone, or a whole view replaces it', () {
+      final own = _unit('own', section: 's-1', private: _private);
+      final view = HeldView()
+        ..apply(_whole())
+        ..apply(
+          _tick(
+            events: const [
+              RecallBegan(unitId: 'own', storedAt: Duration(hours: 8)),
+            ],
+          ),
+        );
+
+      expect(view.recalls, {'own': const Duration(hours: 8)});
+
+      view.apply(_tick(events: const [UnitStored(unitId: 'own')]));
+      expect(view.recalls, isEmpty);
+
+      view
+        ..apply(
+          _tick(
+            events: const [
+              RecallBegan(unitId: 'own', storedAt: Duration(hours: 9)),
+            ],
+          ),
+        )
+        ..apply(
+          _tick(
+            events: const [UnitDeployed(unitId: 'own', at: Position(0, 0, 0))],
+          ),
+        );
+      expect(view.recalls, isEmpty);
+
+      view
+        ..apply(
+          _tick(
+            events: const [
+              RecallBegan(unitId: 'own', storedAt: Duration(hours: 9)),
+            ],
+          ),
+        )
+        ..apply(_tick(gone: const ['own']));
+      expect(view.recalls, isEmpty);
+
+      view
+        ..apply(
+          _tick(
+            ownUnits: [own],
+            events: const [
+              RecallBegan(unitId: 'own', storedAt: Duration(hours: 9)),
+            ],
+          ),
+        )
+        ..apply(_whole());
+      expect(view.recalls, isEmpty);
+    });
+
     test('RELIC-16 the victory countdown starts at the update and resets', () {
       final view = HeldView()
         ..apply(_whole())

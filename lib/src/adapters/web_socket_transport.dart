@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:battle_client/src/ports/transport.dart';
 import 'package:battle_protocol/battle_protocol.dart';
+import 'package:logging/logging.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -14,8 +15,11 @@ final class WebSocketTransport implements Transport {
   /// {@macro web_socket_transport}
   const new();
 
+  static final _log = Logger('battle_client.WebSocketTransport');
+
   @override
   Future<TransportSocket> connect(Uri uri) async {
+    _log.fine('connecting to $uri');
     final channel = WebSocketChannel.connect(uri);
     await channel.ready;
     return _ChannelSocket(channel);

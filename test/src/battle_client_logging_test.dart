@@ -138,19 +138,43 @@ void main() {
       });
     });
 
-    test('an accepted command is logged below INFO', () {
+    test('a command is logged sent, then accepted, by its request ID', () {
       fakeAsync((async) {
         final h = _Harness(async)..signIn();
-        h.client.send(const Reload(unitId: 'u-1'));
+        unawaited(h.client.send(const Reload(unitId: 'u-1')));
         final requestId = h.socket.commands.single.requestId;
         h.socket.deliver(CommandAccepted(requestId: requestId, seq: 4));
         async.flushMicrotasks();
 
         expect(
-          records
-              .where((record) => record.level == Level.FINE)
-              .map((record) => record.message),
-          contains('command $requestId accepted'),
+          lines().where((line) => line.contains('command')),
+          equals([
+            'INFO command $requestId sent: Reload',
+            'INFO command $requestId accepted',
+          ]),
+        );
+      });
+    });
+
+    test('a command given while the host is lost is held, then resent', () {
+      fakeAsync((async) {
+        final h = _Harness(async)..signIn();
+        h.socket.drop();
+        async.flushMicrotasks();
+        unawaited(h.client.send(const Reload(unitId: 'u-1')));
+        async.elapse(const Duration(seconds: 1));
+        h.socket
+          ..deliver(_accepted)
+          ..deliver(_view);
+        async.flushMicrotasks();
+
+        final requestId = h.socket.commands.single.requestId;
+        expect(
+          lines().where((line) => line.contains('command')),
+          equals([
+            'INFO command $requestId held until sign-in: Reload',
+            'INFO command $requestId resent',
+          ]),
         );
       });
     });

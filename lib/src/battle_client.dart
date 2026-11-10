@@ -242,7 +242,15 @@ final class BattleClient {
     );
     final pending = _Pending(message);
     _pending[message.requestId] = pending;
-    if (_status == ClientStatus.signedIn) _send(message);
+    if (_status == ClientStatus.signedIn) {
+      _log.info('command ${message.requestId} sent: ${order.runtimeType}');
+      _send(message);
+    } else {
+      _log.info(
+        'command ${message.requestId} held until sign-in: '
+        '${order.runtimeType}',
+      );
+    }
     return pending.answer.future;
   }
 
@@ -375,6 +383,7 @@ final class BattleClient {
         // Before the status changes, so that a command its listeners send
         // goes out once.
         for (final pending in _pending.values) {
+          _log.info('command ${pending.message.requestId} resent');
           _send(pending.message);
         }
         _setStatus(ClientStatus.signedIn);
@@ -391,7 +400,7 @@ final class BattleClient {
       case RelicAlert(:final at):
         _heard(at);
       case CommandAccepted(:final requestId, :final seq):
-        _log.fine('command $requestId accepted');
+        _log.info('command $requestId accepted');
         _answer(CommandAnswer(requestId: requestId, seq: seq));
       case CommandRefused(:final requestId, :final reason):
         _log.warning('command $requestId refused $reason');

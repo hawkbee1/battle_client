@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:battle_client/src/sight/map_geometry.dart';
 import 'package:battle_pathfinding/battle_pathfinding.dart' as nav;
 import 'package:battle_protocol/battle_protocol.dart';
 import 'package:battle_rules/battle_rules.dart'
@@ -98,21 +99,7 @@ final class NavigationPathPlanner implements PathPlanner {
   double get cellSizeM => _map.cellSizeM;
 
   @override
-  nav.CellRef? cellAt(Position position) {
-    final x = (position.x / cellSizeM).floor();
-    final y = (position.y / cellSizeM).floor();
-    final ground = _map.cellAt(nav.CellRef(x, y));
-    if (ground == null) return null;
-    for (final cells in _map.islands.entries) {
-      final island = cells.value[(x, y)];
-      if (island != null &&
-          (position.z - island.height).abs() <
-              (position.z - ground.height).abs()) {
-        return nav.CellRef(x, y, surface: cells.key);
-      }
-    }
-    return nav.CellRef(x, y);
-  }
+  nav.CellRef? cellAt(Position position) => cellUnder(_map, position);
 
   @override
   Position pointOf(nav.CellRef cell, {bool flying = false}) => Position.metres(

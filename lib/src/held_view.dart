@@ -64,6 +64,12 @@ final class HeldView {
   Roster? get roster => _roster;
   Roster? _roster;
 
+  /// The battle's weather, a key of `terrain.yaml` `weather` (MAP-31): from
+  /// the whole view, then each update that changes it; null until the whole
+  /// view came.
+  String? get weather => _weather;
+  String? _weather;
+
   /// The running victory countdown (RELIC-16).
   HoldView? get hold => _hold;
   HoldView? _hold;
@@ -95,6 +101,7 @@ final class HeldView {
     if (section == null) throw StateError('no whole view yet');
     return SectionView(
       at: _at!,
+      weather: _weather!,
       section: section,
       units: _units.values.toList(),
       hqs: _hqs.values.toList(),
@@ -126,6 +133,7 @@ final class HeldView {
 
   void _whole(SectionView view) {
     _at = view.at;
+    _weather = view.weather;
     _section = view.section;
     _hold = view.hold;
     _units
@@ -147,6 +155,7 @@ final class HeldView {
 
   void _update(TickUpdate update) {
     _at = update.at;
+    _weather = update.weather ?? _weather;
     for (final UnitPosition(:unitId, :position) in update.moved) {
       if (_units[unitId] case final unit?) {
         _units[unitId] = _with(unit, position: position);

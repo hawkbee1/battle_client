@@ -35,6 +35,7 @@ UnitView unit(
   flying: flying,
   weapon: weapon,
   private: UnitPrivate(
+    sightRangeM: 60,
     place: place,
     ap: ApView(
       value: ap,
@@ -579,6 +580,7 @@ void main() {
           hp: 100,
           maxHp: 100,
           private: UnitPrivate(
+            sightRangeM: 60,
             place: UnitPlace.carried,
             ap: passenger.private!.ap,
             morale: 50,

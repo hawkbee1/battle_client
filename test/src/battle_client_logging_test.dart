@@ -21,6 +21,7 @@ const _accepted = SignInAccepted(
 );
 
 const _view = SectionView(
+  weather: 'clear',
   at: Duration(hours: 3),
   section: SectionPrivate(money: 5, xp: 0),
   units: [],

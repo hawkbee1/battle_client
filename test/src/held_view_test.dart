@@ -26,6 +26,7 @@ UnitView _unit(
 );
 
 const _private = UnitPrivate(
+  sightRangeM: 60,
   place: UnitPlace.deployed,
   ap: _ap,
   morale: 1,
@@ -46,6 +47,7 @@ Impact _impact(String target, double damage) => Impact(
 
 TickUpdate _tick({
   Duration at = const Duration(hours: 2),
+  String? weather,
   List<UnitPosition> moved = const [],
   List<UnitView> appeared = const [],
   List<String> gone = const [],
@@ -60,6 +62,7 @@ TickUpdate _tick({
   List<RelicView> relics = const [],
 }) => TickUpdate(
   at: at,
+  weather: weather,
   moved: moved,
   appeared: appeared,
   gone: gone,
@@ -79,6 +82,7 @@ SectionView _whole({
   List<BattleEvent> world = const [],
   HoldView? hold,
 }) => SectionView(
+  weather: 'clear',
   at: const Duration(hours: 1),
   section: _section,
   units: units ?? [_unit('own', section: 's-1', private: _private)],
@@ -109,6 +113,7 @@ void main() {
           expect(view.hqs, equals({for (final h in host.hqs) h.team: h}));
           expect(view.relics.values, orderedEquals(host.relics));
           expect(view.section, equals(host.section));
+          expect(view.weather, equals(host.weather));
           expect(view.hold, equals(host.hold));
           expect(view.world, orderedEquals(host.world));
         });
@@ -138,6 +143,7 @@ void main() {
       expect(view.isWhole, isFalse);
       expect(view.at, isNull);
       expect(view.units, isEmpty);
+      expect(view.weather, isNull);
       expect(() => view.asSectionView, throwsStateError);
     });
 
@@ -156,6 +162,22 @@ void main() {
       expect(view.units.keys, equals(['own']));
       expect(view.world, isEmpty);
       expect(view.asSectionView, equals(_whole()));
+    });
+
+    test('MAP-31 the weather is the whole view value, an update changes it '
+        'only when it carries one', () {
+      final view = HeldView()..apply(_whole());
+      expect(view.weather, 'clear');
+
+      view.apply(_tick());
+      expect(view.weather, 'clear');
+
+      view.apply(_tick(weather: 'fog'));
+      expect(view.weather, 'fog');
+      expect(view.asSectionView.weather, 'fog');
+
+      view.apply(_whole());
+      expect(view.weather, 'clear');
     });
 
     test('messages other than views change nothing', () {

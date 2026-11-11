@@ -22,3 +22,5 @@ export 'src/pre_check/move_preview.dart';
 export 'src/pre_check/order_pre_check.dart';
 export 'src/pre_check/path_planner.dart';
 export 'src/request_ids.dart';
+export 'src/sight/ground_sight.dart';
+export 'src/sight/map_geometry.dart';

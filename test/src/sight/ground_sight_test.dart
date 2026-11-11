@@ -18,6 +18,7 @@ cell 10
 legend g grass
 legend t grass tree
 legend b grass building
+legend m mountain
 terrain
   ${terrain.split('').join(' ')}
 heights
@@ -70,6 +71,15 @@ void main() {
 
       expect(seenColumns(sight), {0, 1, 2});
     });
+
+    test(
+      'MAP-26 a mountain blocks the line behind it; its own cell is lit',
+      () {
+        final sight = sightOver(_row('ggmggggg'));
+
+        expect(seenColumns(sight), {0, 1, 2});
+      },
+    );
 
     test('MAP-27 each metre of forest the line crosses reduces the '
         'effective vision', () {

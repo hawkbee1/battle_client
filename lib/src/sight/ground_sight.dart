@@ -125,10 +125,12 @@ final class GroundSight {
         _terrain.weather[weather] ??
         (throw ArgumentError.value(weather, 'weather', 'unknown'));
     final standing = _terrain.terrainTypes[_map.cellAt(from)!.terrain]!;
-    final reachM =
-        rangeM * factor * standing.visionFactor +
-        _terrain.vision.heightBonusMaxM;
-    final reach = (reachM / cellSizeM).ceil();
+    final rules = _terrain.vision;
+    // The farthest a cell can be seen from: the effective vision before the
+    // forest the line crosses, which only shortens it (MAP-31 to MAP-33).
+    final baseM = rangeM * factor * standing.visionFactor;
+    final reach = ((baseM + rules.heightBonusMaxM) / cellSizeM).ceil();
+    final eyesZ = _pointZ(from, flying: flying);
     final seen = <int>[];
     for (
       var y = math.max(0, from.y - reach);
@@ -141,6 +143,14 @@ final class GroundSight {
         x++
       ) {
         final to = nav.CellRef(x, y);
+        // Cheap first: the distance against the most the height can add.
+        final distanceM = _distanceM(from, to);
+        if (distanceM > baseM + rules.heightBonusMaxM) continue;
+        final bonusM = math.min(
+          rules.heightBonusMaxM,
+          math.max(0, eyesZ - _pointZ(to)) * rules.heightBonusMPerM,
+        );
+        if (distanceM > baseM + bonusM) continue;
         final line = sightLine(
           from,
           to,
@@ -175,14 +185,18 @@ final class GroundSight {
     var hill = false;
     final obstacles = <SightObstacle>[];
     for (final cell in between) {
+      final ground = _map.cellAt(cell)!;
       final share = _distanceM(from, cell) / length;
-      hill = hill || _map.cellAt(cell)!.height > fromZ + (toZ - fromZ) * share;
-      obstacles.add(TerrainObstacle(_map.cellAt(cell)!.terrain));
+      hill = hill || ground.height > fromZ + (toZ - fromZ) * share;
+      // Only what can block goes on the line: the rest never changes the
+      // answer, and the line is made for every cell in range.
+      if (_terrain.terrainTypes[ground.terrain]?.blocksLos ?? false) {
+        obstacles.add(TerrainObstacle(ground.terrain));
+      }
       for (final object in _map.objectsAt(cell)) {
-        obstacles.add(ObjectObstacle(object));
-        if (_terrain.objects[object]?.conceals == 'forest') {
-          forest += cellSizeM;
-        }
+        final type = _terrain.objects[object];
+        if (type?.blocksLos ?? false) obstacles.add(ObjectObstacle(object));
+        if (type?.conceals == 'forest') forest += cellSizeM;
       }
     }
     if (hill) obstacles.add(const GroundObstacle());

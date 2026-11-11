@@ -9,6 +9,7 @@ environment:
 
 dependencies:
   args: ^2.7.0
+  battle_pathfinding: ^0.1.0
   battle_protocol: ^0.1.0
   battle_rules: ^0.1.0
   equatable: ^3.0.0

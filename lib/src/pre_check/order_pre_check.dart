@@ -67,6 +67,16 @@ enum PreCheckRefusal {
   /// The section's money does not pay the price (ECO-04, COMBAT-27).
   notEnoughMoney('not_enough_money'),
 
+  /// The destination is not on the map.
+  offMap('off_map'),
+
+  /// No path leads to the destination: the mover is stranded (MAP-37).
+  noPath('no_path'),
+
+  /// A unit the section sees takes the destination's place (MAP-50). The host
+  /// does not refuse it yet (M8); the code is the client's own.
+  occupied('occupied'),
+
   /// The guild camp is never stored by order (HQ-30, HQ-47).
   neverStored('never_stored'),
 

@@ -180,6 +180,28 @@ void main() {
       expect(view.weather, 'clear');
     });
 
+    test('MAP-08 the world version changes with the delta layer and only '
+        'then', () {
+      final view = HeldView()..apply(_whole());
+      final start = view.worldVersion;
+
+      view.apply(_tick());
+      expect(view.worldVersion, start);
+
+      view.apply(
+        _tick(
+          events: const [
+            CraterDug(at: Position(1, 1, 1), radiusM: 2, depthM: 1),
+          ],
+        ),
+      );
+      final dug = view.worldVersion;
+      expect(dug, isNot(start));
+
+      view.apply(_whole());
+      expect(view.worldVersion, isNot(dug));
+    });
+
     test('messages other than views change nothing', () {
       final view = HeldView()..apply(_whole());
       final before = view.asSectionView;

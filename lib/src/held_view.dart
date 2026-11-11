@@ -83,6 +83,11 @@ final class HeldView {
   /// The relics, by ID.
   Map<String, RelicView> get relics => UnmodifiableMapView(_relics);
 
+  /// Changes each time the delta layer does: a view that only needs to know
+  /// whether to look at [world] again compares this number (M7 Issue 9).
+  int get worldVersion => _worldVersion;
+  var _worldVersion = 0;
+
   /// The delta layer as world events (MAP-08), in the host's order: the
   /// craters in the order they were dug, the structures built, the objects
   /// damaged, and those destroyed.
@@ -146,6 +151,7 @@ final class HeldView {
       ..clear()
       ..addEntries(view.relics.map((relic) => MapEntry(relic.relicId, relic)));
     _recalls.clear();
+    _worldVersion++;
     _craters.clear();
     _built.clear();
     _damaged.clear();
@@ -234,6 +240,7 @@ final class HeldView {
   }
 
   void _world(BattleEvent event) {
+    _worldVersion++;
     switch (event) {
       case CraterDug():
         _craters.add(event);

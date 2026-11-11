@@ -136,6 +136,96 @@ void main() {
       });
     });
 
+    group('withWorld applies the delta layer the host sent', () {
+      const wall = [Cell(3, 0)];
+
+      test('MAP-06 a wall built blocks the line behind it; a bridge or a '
+          'trap built changes nothing a sight line reads', () {
+        final sight = sightOver(_row('gggggggg'));
+
+        expect(
+          seenColumns(
+            sight.withWorld([
+              const StructureBuilt(
+                siteId: 'w-1',
+                structure: 'wall',
+                cells: wall,
+              ),
+            ]),
+          ),
+          {0, 1, 2, 3},
+        );
+        expect(
+          seenColumns(
+            sight.withWorld([
+              const StructureBuilt(
+                siteId: 'b-1',
+                structure: 'bridge',
+                cells: wall,
+              ),
+              const StructureBuilt(
+                siteId: 't-1',
+                structure: 'trap',
+                cells: wall,
+              ),
+            ]),
+          ),
+          seenColumns(sight),
+        );
+      });
+
+      test('MAP-28 a building destroyed stops blocking, and a tree destroyed '
+          'stops concealing', () {
+        final building = sightOver(_row('ggbggggg'));
+        final wood = sightOver(_row('gtttgggggg'));
+
+        expect(seenColumns(building), {0, 1, 2});
+        expect(
+          seenColumns(
+            building.withWorld([
+              const ObjectDestroyed(object: 'building', cells: [Cell(2, 0)]),
+            ]),
+          ),
+          seenColumns(sightOver(_row('gggggggg'))),
+        );
+        expect(
+          seenColumns(
+            wood.withWorld([
+              for (final x in [1, 2, 3])
+                ObjectDestroyed(object: 'tree', cells: [Cell(x, 0)]),
+            ]),
+          ),
+          seenColumns(sightOver(_row('gggggggggg'))),
+        );
+      });
+
+      test('MAP-07 a crater lowers the ground: a unit in it looks up at the '
+          'rim, and a hill dug away stops blocking', () {
+        final hill = sightOver(_row('gggggggg', heights: '0 0 0 30 0 0 0 0'));
+        final dug = hill.withWorld([
+          CraterDug(at: Position.metres(35, 5, 30), radiusM: 6, depthM: 30),
+        ]);
+
+        expect(seenColumns(hill), {0, 1, 2, 3});
+        expect(seenColumns(dug), hasLength(8));
+      });
+
+      test('damage changes nothing, and a wall on a floating island does not '
+          'block the lines of the ground', () {
+        final sight = sightOver(_row('gggggggg'));
+        final same = sight.withWorld([
+          const ObjectDamaged(object: 'tree', cells: [Cell(2, 0)], hp: 10),
+          const StructureBuilt(
+            siteId: 'w-2',
+            structure: 'wall',
+            cells: [Cell(2, 0, island: 'sky')],
+          ),
+        ]);
+
+        expect(seenColumns(same), seenColumns(sight));
+      });
+    });
+
     test('MAP-27 the range is cut at the edge of the map', () {
       final sight = sightOver(_row('gggg'));
 

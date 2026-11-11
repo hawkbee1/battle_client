@@ -16,34 +16,83 @@ import 'package:battle_rules/battle_rules.dart'
 /// {@template ground_sight}
 /// The ground a unit sees, for display (M7 Issue 9, MAP-26 to MAP-35,
 /// decision 235): `battle_rules`' [Vision], the host's own code, over the
-/// map as built, with the sight line the host makes (`World.sightLine`): from
-/// the top of the observer's hit volume to the ground, where a hill, a
+/// battle's map, with the sight line the host makes (`World.sightLine`):
+/// from the top of the observer's hit volume to the ground, where a hill, a
 /// building or a mountain between blocks it and a wood conceals.
 ///
-/// It knows the map as built: the structures built and destroyed during the
-/// battle and the craters (the delta layer) are not applied, so after one
-/// the lit ground can differ from the host's own, which decides (stack
-/// decision 8). It serves display only: what a unit sees is the host's.
+/// It starts from the map as built; [withWorld] applies the delta layer the
+/// host sent (MAP-06 to MAP-10): the walls built, the trees and buildings
+/// destroyed, the craters dug. What a unit sees is the host's to decide
+/// (stack decision 8): this is for display.
 /// {@endtemplate}
 final class GroundSight {
   /// {@macro ground_sight}
   new({required nav.NavigationMap map, required TerrainData terrain})
-    : _map = map,
-      _terrain = terrain,
-      _vision = Vision(terrain) {
-    _altitudeLimitM =
+    : this._(
+        map,
+        terrain,
+        // The altitude limit of decision 142, of the map as built: the host
+        // keeps it, craters or not.
         [
-          ...map.ground.map((cell) => cell.height),
-          for (final island in map.islands.values)
-            ...island.values.map((cell) => cell.height),
-        ].reduce(math.max) +
-        terrain.flyingMaxAboveHighestTerrainM;
-  }
+              ...map.ground.map((cell) => cell.height),
+              for (final island in map.islands.values)
+                ...island.values.map((cell) => cell.height),
+            ].reduce(math.max) +
+            terrain.flyingMaxAboveHighestTerrainM,
+      );
+
+  new _(this._map, this._terrain, this._altitudeLimitM)
+    : _vision = Vision(_terrain);
 
   final nav.NavigationMap _map;
   final TerrainData _terrain;
   final Vision _vision;
-  late final double _altitudeLimitM;
+  final double _altitudeLimitM;
+
+  /// This sight on the map with the delta layer [world] applied, in the
+  /// host's order (craters, structures built, objects destroyed): only what
+  /// a sight line reads, that is the ground's height and the objects that
+  /// block sight or conceal. A bridge, a road, a ladder, a trap or damage
+  /// changes nothing it reads.
+  GroundSight withWorld(Iterable<BattleEvent> world) {
+    var map = _map;
+    nav.CellRef cellOf(Cell cell) =>
+        nav.CellRef(cell.x, cell.y, surface: cell.island ?? nav.groundSurface);
+    bool reads(String type) {
+      final object = _terrain.objects[type];
+      return object != null && (object.blocksLos || object.conceals != null);
+    }
+
+    for (final event in world) {
+      switch (event) {
+        case CraterDug(:final at, :final radiusM, :final depthM):
+          map = map.withCrater(
+            nav.Crater(
+              centreXM: at.x,
+              centreYM: at.y,
+              radiusM: radiusM,
+              depthM: depthM,
+            ),
+          );
+        case StructureBuilt(:final structure, :final cells)
+            when reads(structure):
+          for (final cell in cells) {
+            map = nav
+                .applyChange(map, nav.ObjectBuilt(cellOf(cell), structure))
+                .$1;
+          }
+        case ObjectDestroyed(:final object, :final cells) when reads(object):
+          for (final cell in cells) {
+            map = nav
+                .applyChange(map, nav.ObjectDestroyed(cellOf(cell), object))
+                .$1;
+          }
+        default:
+          break;
+      }
+    }
+    return GroundSight._(map, _terrain, _altitudeLimitM);
+  }
 
   /// The side of a cell, in metres.
   double get cellSizeM => _map.cellSizeM;

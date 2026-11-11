@@ -14,7 +14,9 @@ import 'package:logging/logging.dart';
 /// {@template client_settings}
 /// A client's timings (stack decision 3): the host closes a socket silent
 /// for 60 s, so the client sends a heartbeat every 20 s; a client that
-/// lost its host waits [backoff] between attempts.
+/// lost its host waits [backoff] between attempts; a client refused for "no
+/// section" asks again up to [seatRetries] times, since the host admits the
+/// section of a newcomer at its next look at the battle's row (SOC-30).
 /// {@endtemplate}
 final class ClientSettings {
   /// {@macro client_settings}
@@ -24,6 +26,7 @@ final class ClientSettings {
       first: Duration(milliseconds: 500),
       max: Duration(seconds: 30),
     ),
+    this.seatRetries = 8,
   });
 
   /// How often a signed-in client sends a heartbeat.
@@ -31,6 +34,11 @@ final class ClientSettings {
 
   /// The waits between attempts to reach the host.
   final Backoff backoff;
+
+  /// How many times in a row a client refused for "no section" asks again,
+  /// after a [backoff], before it stops for good. The default waits about a
+  /// minute: the host looks at its battles' rows every 10 s.
+  final int seatRetries;
 }
 
 /// Where a client stands.
@@ -181,6 +189,9 @@ final class BattleClient {
   /// The account and section it signed in as, from its first sign-in.
   Seat? get seat => _seat;
   Seat? _seat;
+
+  /// The sign-ins in a row refused for "no section".
+  int _unseated = 0;
 
   /// The refused sign-in or goodbye that stopped it.
   HostMessage? get stoppedBy => _stoppedBy;
@@ -378,6 +389,7 @@ final class BattleClient {
     switch (message) {
       case SignInAccepted(:final accountId, :final sectionId, :final team):
         _log.info('sign-in accepted');
+        _unseated = 0;
         _seat = (accountId: accountId, sectionId: sectionId, team: team);
         _heard(message.battleTime);
         // Before the status changes, so that a command its listeners send
@@ -394,7 +406,13 @@ final class BattleClient {
       case SignInRefused(:final reason):
         _log.warning('sign-in refused ${reason.name}');
         keep = false;
-        if (reason != SignInRefusal.battleNotFound) _stop(message);
+        // A battle the host has not got (it is moving), and a section it has
+        // not admitted yet (a newcomer's, SOC-30), are asked for again.
+        final again =
+            reason == SignInRefusal.battleNotFound ||
+            (reason == SignInRefusal.noSection &&
+                ++_unseated <= settings.seatRetries);
+        if (!again) _stop(message);
       case SectionView(:final at) || TickUpdate(:final at):
         _heard(at);
       case RelicAlert(:final at):

@@ -569,11 +569,93 @@ void main() {
       });
     });
 
+    group('SOC-30 a section the host has not admitted yet', () {
+      test('is asked for again after a backoff, and the client signs in once '
+          'the host has admitted it', () {
+        fakeAsync((async) {
+          final h = _Harness(async);
+          h.client.start();
+          async.flushMicrotasks();
+          h.socket.deliver(const SignInRefused(SignInRefusal.noSection));
+          async.flushMicrotasks();
+
+          expect(h.client.status, equals(ClientStatus.waiting));
+          expect(h.client.stoppedBy, isNull);
+
+          h
+            ..waitBackoff()
+            ..accept();
+
+          expect(h.client.status, equals(ClientStatus.signedIn));
+          expect(h.transport.sockets, hasLength(2));
+        });
+      });
+
+      test('is asked for [ClientSettings.seatRetries] times, then the client '
+          'stops', () {
+        fakeAsync((async) {
+          final h = _Harness(
+            async,
+            settings: const ClientSettings(seatRetries: 2),
+          );
+          h.client.start();
+          async.flushMicrotasks();
+          for (var refusal = 1; refusal <= 3; refusal++) {
+            h.socket.deliver(const SignInRefused(SignInRefusal.noSection));
+            async.flushMicrotasks();
+            if (refusal < 3) {
+              expect(h.client.status, equals(ClientStatus.waiting));
+              h.waitBackoff();
+            }
+          }
+
+          expect(h.client.status, equals(ClientStatus.stopped));
+          expect(
+            h.client.stoppedBy,
+            equals(const SignInRefused(SignInRefusal.noSection)),
+          );
+          expect(h.transport.sockets, hasLength(3));
+        });
+      });
+
+      test('is counted again after a sign-in, not for the life of the '
+          'client', () {
+        fakeAsync((async) {
+          final h = _Harness(
+            async,
+            settings: const ClientSettings(seatRetries: 1),
+          )..signIn();
+          h.socket.deliver(const Goodbye(GoodbyeReason.idle));
+          async.flushMicrotasks();
+          h
+            ..waitBackoff()
+            ..socket.deliver(const SignInRefused(SignInRefusal.noSection));
+          async.flushMicrotasks();
+
+          // One refusal in a row is within the one retry allowed.
+          expect(h.client.status, equals(ClientStatus.waiting));
+        });
+      });
+
+      test('with no seat retry, the refusal stops the client at once', () {
+        fakeAsync((async) {
+          final h = _Harness(
+            async,
+            settings: const ClientSettings(seatRetries: 0),
+          );
+          h.client.start();
+          async.flushMicrotasks();
+          h.socket.deliver(const SignInRefused(SignInRefusal.noSection));
+          async.elapse(const Duration(minutes: 5));
+
+          expect(h.client.status, equals(ClientStatus.stopped));
+          expect(h.transport.sockets, hasLength(1));
+        });
+      });
+    });
+
     group('stops for good', () {
-      for (final refusal in [
-        SignInRefusal.invalidCredential,
-        SignInRefusal.noSection,
-      ]) {
+      for (final refusal in [SignInRefusal.invalidCredential]) {
         test('on a sign-in refused for ${refusal.name}', () {
           fakeAsync((async) {
             final h = _Harness(async);

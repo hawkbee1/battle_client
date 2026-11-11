@@ -32,7 +32,7 @@ const _view = SectionView(
 
 /// A client on fake time with its log records captured.
 final class _Harness {
-  new(this.async) {
+  new(this.async, {ClientSettings settings = const ClientSettings()}) {
     client = BattleClient(
       battleId: 'b-1',
       transport: transport,
@@ -43,6 +43,7 @@ final class _Harness {
       credential: () async => const Credential.jwt('jwt-secret-value'),
       clock: FakeClock(async),
       random: Random(7),
+      settings: settings,
     );
   }
 
@@ -182,7 +183,10 @@ void main() {
 
     test('a refused sign-in is a WARNING, and the socket closes for it', () {
       fakeAsync((async) {
-        final h = _Harness(async)..client.start();
+        final h = _Harness(
+          async,
+          settings: const ClientSettings(seatRetries: 0),
+        )..client.start();
         async.flushMicrotasks();
         h.socket.deliver(const SignInRefused(SignInRefusal.noSection));
         async.flushMicrotasks();

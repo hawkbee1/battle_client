@@ -63,6 +63,7 @@ UnitView _unit(
   weapon: 'rifle',
   private: team == 'blue'
       ? UnitPrivate(
+          sightRangeM: 60,
           place: place,
           ap: ApView(value: ap, at: _now, perHour: perHour, max: 30),
           morale: 50,

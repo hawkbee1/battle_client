@@ -64,6 +64,12 @@ final class HeldView {
   Roster? get roster => _roster;
   Roster? _roster;
 
+  /// The battle's weather, a key of `terrain.yaml` `weather` (MAP-31): from
+  /// the whole view, then each update that changes it; null until the whole
+  /// view came.
+  String? get weather => _weather;
+  String? _weather;
+
   /// The running victory countdown (RELIC-16).
   HoldView? get hold => _hold;
   HoldView? _hold;
@@ -76,6 +82,11 @@ final class HeldView {
 
   /// The relics, by ID.
   Map<String, RelicView> get relics => UnmodifiableMapView(_relics);
+
+  /// Changes each time the delta layer does: a view that only needs to know
+  /// whether to look at [world] again compares this number (M7 Issue 9).
+  int get worldVersion => _worldVersion;
+  var _worldVersion = 0;
 
   /// The delta layer as world events (MAP-08), in the host's order: the
   /// craters in the order they were dug, the structures built, the objects
@@ -95,6 +106,7 @@ final class HeldView {
     if (section == null) throw StateError('no whole view yet');
     return SectionView(
       at: _at!,
+      weather: _weather!,
       section: section,
       units: _units.values.toList(),
       hqs: _hqs.values.toList(),
@@ -126,6 +138,7 @@ final class HeldView {
 
   void _whole(SectionView view) {
     _at = view.at;
+    _weather = view.weather;
     _section = view.section;
     _hold = view.hold;
     _units
@@ -138,6 +151,7 @@ final class HeldView {
       ..clear()
       ..addEntries(view.relics.map((relic) => MapEntry(relic.relicId, relic)));
     _recalls.clear();
+    _worldVersion++;
     _craters.clear();
     _built.clear();
     _damaged.clear();
@@ -147,6 +161,7 @@ final class HeldView {
 
   void _update(TickUpdate update) {
     _at = update.at;
+    _weather = update.weather ?? _weather;
     for (final UnitPosition(:unitId, :position) in update.moved) {
       if (_units[unitId] case final unit?) {
         _units[unitId] = _with(unit, position: position);
@@ -225,6 +240,7 @@ final class HeldView {
   }
 
   void _world(BattleEvent event) {
+    _worldVersion++;
     switch (event) {
       case CraterDug():
         _craters.add(event);

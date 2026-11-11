@@ -11,6 +11,7 @@ import 'package:test/test.dart';
 import '../../helpers/fakes.dart';
 
 const _private = UnitPrivate(
+  sightRangeM: 60,
   place: UnitPlace.deployed,
   ap: ApView(value: 30, at: Duration.zero, perHour: 4, max: 30),
   morale: 1,
@@ -55,6 +56,7 @@ UnitView _own(
 );
 
 SectionView _view(List<UnitView> units) => SectionView(
+  weather: 'clear',
   at: Duration.zero,
   section: const SectionPrivate(money: 0, xp: 0),
   units: units,
@@ -78,6 +80,7 @@ void main() {
             'stored',
             0,
             private: const UnitPrivate(
+              sightRangeM: 60,
               place: UnitPlace.stored,
               ap: ApView(value: 30, at: Duration.zero, perHour: 4, max: 30),
               morale: 1,

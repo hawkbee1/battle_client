@@ -722,6 +722,87 @@ void main() {
         );
       });
 
+      group("with the section's room on the field", () {
+        const holding = SectionPrivate(money: 0, xp: 0);
+        final stored = unit('u-1', place: UnitPlace.stored);
+
+        /// [field] units on the field, [stored] in storage, with [stored]'s
+        /// own unit among them.
+        List<UnitView> owned({required int field, int stored = 1}) => [
+          for (var i = 0; i < field; i++) unit('f-$i'),
+          for (var i = 0; i < stored; i++)
+            unit('s-$i', place: UnitPlace.stored),
+        ];
+
+        PreChecked deployIn(List<UnitView> own, {Duration? lockedUntil}) =>
+            check.deploy(
+              unit: stored,
+              portal: _hq,
+              seen: const [],
+              time: _now,
+              lockedUntil: lockedUntil,
+              section: holding,
+              owned: own,
+            );
+
+        test('UNIT-39 deploys while the field holds fewer units than the '
+            'cap', () {
+          expect(deployIn(owned(field: 4)), const PreCheckPassed());
+        });
+
+        test('UNIT-39 a field as full as the cap has no room for one more', () {
+          expect(
+            deployIn(owned(field: 5)),
+            const PreCheckRefused(PreCheckRefusal.noRoom),
+          );
+        });
+
+        test('UNIT-39 a carried unit is on the field, a prisoner is not', () {
+          final carried = unit('c-1', place: UnitPlace.carried);
+          final captive = unit('p-1', place: UnitPlace.prisoner);
+
+          expect(
+            deployIn([...owned(field: 4), carried]),
+            const PreCheckRefused(PreCheckRefusal.noRoom),
+          );
+          expect(
+            deployIn([...owned(field: 4), captive]),
+            const PreCheckPassed(),
+          );
+        });
+
+        test('HQ-35 the room is asked before the lock', () {
+          expect(
+            deployIn(
+              owned(field: 5),
+              lockedUntil: _now + const Duration(hours: 1),
+            ),
+            const PreCheckRefused(PreCheckRefusal.noRoom),
+          );
+          expect(
+            deployIn(
+              owned(field: 4),
+              lockedUntil: _now + const Duration(hours: 1),
+            ),
+            const PreCheckRefused(PreCheckRefusal.sectionLocked),
+          );
+        });
+
+        test('a stored unit is still not deployed when it is not stored', () {
+          expect(
+            check.deploy(
+              unit: unit('u-1'),
+              portal: _hq,
+              seen: const [],
+              time: _now,
+              section: holding,
+              owned: owned(field: 5),
+            ),
+            const PreCheckRefused(PreCheckRefusal.notStored),
+          );
+        });
+      });
+
       test('HQ-39 a portal the section does not see blocks nothing here', () {
         expect(
           deploy(
@@ -731,6 +812,61 @@ void main() {
           ),
           const PreCheckPassed(),
         );
+      });
+    });
+
+    group('capacity', () {
+      const fresh = SectionPrivate(money: 0, xp: 0);
+
+      test('UNIT-39 UNIT-40 counts the units on the field, carried ones '
+          'included, and in storage, against the cap and what storage '
+          'holds', () {
+        final capacity = check.capacity(
+          section: fresh,
+          owned: [
+            unit('f-1'),
+            unit('f-2'),
+            unit('c-1', place: UnitPlace.carried),
+            unit('s-1', place: UnitPlace.stored),
+            unit('p-1', place: UnitPlace.prisoner),
+          ],
+        );
+
+        expect(
+          capacity,
+          const SectionCapacity(
+            active: 3,
+            activeMax: 5,
+            stored: 1,
+            storedMax: 10,
+          ),
+        );
+      });
+
+      test('UNIT-15 UNIT-39 a higher commander level raises both maxima', () {
+        final top = check.units.progression.commanderLevels.sectionXp.last;
+
+        final capacity = check.capacity(
+          section: SectionPrivate(money: 0, xp: top.toDouble()),
+          owned: const [],
+        );
+
+        expect(capacity.activeMax, greaterThan(5));
+        expect(capacity.storedMax, 2 * capacity.activeMax);
+      });
+
+      test('HQ-47 the guild camp and a unit the section does not own '
+          'count in no number', () {
+        final capacity = check.capacity(
+          section: fresh,
+          owned: [
+            unit('f-1'),
+            unit('e-1', type: 'encampment'),
+            unit('s-1', type: 'encampment', place: UnitPlace.stored),
+          ],
+        );
+
+        expect((capacity.active, capacity.stored), (1, 0));
       });
     });
 

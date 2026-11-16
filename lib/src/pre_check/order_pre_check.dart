@@ -389,12 +389,19 @@ final class OrderPreCheck {
   /// enemy the section does not see blocks it all the same: the host's
   /// refusal then shows, and the client gives no clue before (decision 237).
   /// Like any paid action it waits for the AP it lacks (COMBAT-06).
+  ///
+  /// With the section's own [section] and [owned] units, a unit is deployed
+  /// only while the section has room on the field for one more (UNIT-39,
+  /// UNIT-40: the cap at the commander's level counts the units on the field,
+  /// the commander included). Without them the room is not asked.
   PreChecked deploy({
     required UnitView unit,
     required Position? portal,
     required Iterable<UnitView> seen,
     required Duration time,
     Duration? lockedUntil,
+    SectionPrivate? section,
+    Iterable<UnitView> owned = const [],
   }) {
     final private = unit.private;
     if (private?.place == UnitPlace.prisoner) {
@@ -402,6 +409,9 @@ final class OrderPreCheck {
     }
     if (private == null || private.place != UnitPlace.stored) {
       return const PreCheckRefused(PreCheckRefusal.notStored);
+    }
+    if (section != null && !_hasRoom(unit.unitType, section, owned)) {
+      return const PreCheckRefused(PreCheckRefusal.noRoom);
     }
     if (lockedUntil != null && time < lockedUntil) {
       return const PreCheckRefused(PreCheckRefusal.sectionLocked);

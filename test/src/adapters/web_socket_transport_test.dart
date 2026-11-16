@@ -32,7 +32,9 @@ void main() {
     test(
       'stack decision 3 carries binary frames both ways and closes',
       () async {
-        final socket = await const WebSocketTransport().connect(at());
+        // Built at run time, so that the constructor runs.
+        // ignore: prefer_const_constructors
+        final socket = await WebSocketTransport().connect(at());
         final host = await accepted.stream.first;
         final received = StreamIterator(host);
         final frames = StreamIterator(socket.frames);

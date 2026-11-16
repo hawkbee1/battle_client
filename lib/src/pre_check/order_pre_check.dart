@@ -180,6 +180,36 @@ final class StoreNotPossible extends StorePlan {
   List<Object?> get props => [reason];
 }
 
+/// {@template section_capacity}
+/// How full a section is (UNIT-39, UNIT-40): the units [active] on the field
+/// against the cap at its commander's level, [activeMax], and the units
+/// [stored] against what its storage holds, [storedMax].
+/// {@endtemplate}
+final class SectionCapacity extends Equatable {
+  /// {@macro section_capacity}
+  const new({
+    required this.active,
+    required this.activeMax,
+    required this.stored,
+    required this.storedMax,
+  });
+
+  /// The units on the field, carried ones included.
+  final int active;
+
+  /// The most units the section keeps on the field.
+  final int activeMax;
+
+  /// The units in storage.
+  final int stored;
+
+  /// The most units its storage holds.
+  final int storedMax;
+
+  @override
+  List<Object?> get props => [active, activeMax, stored, storedMax];
+}
+
 /// {@template order_pre_check}
 /// The order pre-check of M7 Issue 5 (stack decision 8): range, rounds, AP
 /// and the weapon handling rules, from `battle_rules`' data and the section's
@@ -474,6 +504,42 @@ final class OrderPreCheck {
       ? const PreCheckRefused(PreCheckRefusal.notEnoughMoney)
       : const PreCheckPassed();
 
+  /// How full a section with [section]'s XP and [owned] units is (UNIT-39,
+  /// UNIT-40): the units on the field and in storage against the cap at the
+  /// commander's level and the units the section may own, which its storage
+  /// holds. Only the units that count toward the cap are counted (HQ-47).
+  SectionCapacity capacity({
+    required SectionPrivate section,
+    required Iterable<UnitView> owned,
+  }) {
+    final levels = SectionLevel(units.progression);
+    final level = levels.levelFor(section.xp);
+    final counted = _counted(owned);
+    return SectionCapacity(
+      active: counted.where(_isActive).length,
+      activeMax: levels.cap(level),
+      stored: counted
+          .where((unit) => unit.private!.place == UnitPlace.stored)
+          .length,
+      storedMax: levels.maxUnits(level),
+    );
+  }
+
+  static bool _isActive(UnitView unit) =>
+      unit.private!.place == UnitPlace.deployed ||
+      unit.private!.place == UnitPlace.carried;
+
+  /// The units of [owned] that count toward the cap and the units owned: the
+  /// section's own (those with a private state) whose type is not outside
+  /// the cap. A type this client's data does not know counts as one that
+  /// counts.
+  List<UnitView> _counted(Iterable<UnitView> owned) => [
+    for (final unit in owned)
+      if (unit.private != null &&
+          units.unitTypes[unit.unitType]?.countsInSectionCap != false)
+        unit,
+  ];
+
   /// UNIT-39 and UNIT-40: the units that count toward the cap, on the field
   /// and owned, against the cap at the commander's level. A type this
   /// client's data does not know counts as one that counts.
@@ -483,22 +549,11 @@ final class OrderPreCheck {
     Iterable<UnitView> owned,
   ) {
     if (units.unitTypes[unitType]?.countsInSectionCap == false) return true;
-    final counted = [
-      for (final unit in owned)
-        if (unit.private != null &&
-            units.unitTypes[unit.unitType]?.countsInSectionCap != false)
-          unit,
-    ];
+    final counted = _counted(owned);
     final levels = SectionLevel(units.progression);
     return levels.hasRoom(
       level: levels.levelFor(section.xp),
-      active: counted
-          .where(
-            (unit) =>
-                unit.private!.place == UnitPlace.deployed ||
-                unit.private!.place == UnitPlace.carried,
-          )
-          .length,
+      active: counted.where(_isActive).length,
       owned: counted.length,
     );
   }

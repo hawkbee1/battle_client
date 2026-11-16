@@ -815,6 +815,61 @@ void main() {
       });
     });
 
+    group('capacity', () {
+      const fresh = SectionPrivate(money: 0, xp: 0);
+
+      test('UNIT-39 UNIT-40 counts the units on the field, carried ones '
+          'included, and in storage, against the cap and what storage '
+          'holds', () {
+        final capacity = check.capacity(
+          section: fresh,
+          owned: [
+            unit('f-1'),
+            unit('f-2'),
+            unit('c-1', place: UnitPlace.carried),
+            unit('s-1', place: UnitPlace.stored),
+            unit('p-1', place: UnitPlace.prisoner),
+          ],
+        );
+
+        expect(
+          capacity,
+          const SectionCapacity(
+            active: 3,
+            activeMax: 5,
+            stored: 1,
+            storedMax: 10,
+          ),
+        );
+      });
+
+      test('UNIT-15 UNIT-39 a higher commander level raises both maxima', () {
+        final top = check.units.progression.commanderLevels.sectionXp.last;
+
+        final capacity = check.capacity(
+          section: SectionPrivate(money: 0, xp: top.toDouble()),
+          owned: const [],
+        );
+
+        expect(capacity.activeMax, greaterThan(5));
+        expect(capacity.storedMax, 2 * capacity.activeMax);
+      });
+
+      test('HQ-47 the guild camp and a unit the section does not own '
+          'count in no number', () {
+        final capacity = check.capacity(
+          section: fresh,
+          owned: [
+            unit('f-1'),
+            unit('e-1', type: 'encampment'),
+            unit('s-1', type: 'encampment', place: UnitPlace.stored),
+          ],
+        );
+
+        expect((capacity.active, capacity.stored), (1, 0));
+      });
+    });
+
     group('buy', () {
       const soldier = RosterUnit(
         unitType: 'soldier',

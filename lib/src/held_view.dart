@@ -21,7 +21,7 @@ double apAt(ApView ap, Duration time) {
 /// holds what the host's view of the section holds (`SectionView`): the
 /// units the section knows, the HQs it sees, the relics, the victory
 /// countdown, its private state and the delta layer (MAP-08); and the
-/// `Roster` the host sends after it (M7.7).
+/// `Roster` and the `ManagerNotice` the host sends after it (M7.7).
 ///
 /// A unit is replaced whole when the host sends it whole (it came into
 /// sight, or its private state changed); a unit the section sees changes
@@ -63,6 +63,12 @@ final class HeldView {
   /// sends it again, and it replaces the one held.
   Roster? get roster => _roster;
   Roster? _roster;
+
+  /// The account that manages the HQ of the section's team (HQ-05): from the
+  /// notice the host sends after the roster, then each `ManagerChanged`; null
+  /// until the notice came, and while no player of the team has logged in.
+  String? get manager => _manager;
+  String? _manager;
 
   /// The battle's weather, a key of `terrain.yaml` `weather` (MAP-31): from
   /// the whole view, then each update that changes it; null until the whole
@@ -126,6 +132,8 @@ final class HeldView {
         _update(message);
       case Roster():
         _roster = message;
+      case ManagerNotice(:final accountId):
+        _manager = accountId;
       case SignInAccepted() ||
           SignInRefused() ||
           CommandAccepted() ||
@@ -212,6 +220,8 @@ final class HeldView {
         _recalls.remove(unitId);
       case VictoryHoldStarted(:final team, :final winsAt):
         _hold = HoldView(team: team, since: at, winsAt: winsAt);
+      case ManagerChanged(:final accountId):
+        _manager = accountId;
       case VictoryHoldReset():
         _hold = null;
       case StructureBuilt() ||

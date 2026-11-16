@@ -249,6 +249,32 @@ void main() {
       expect(view.roster, equals(second));
     });
 
+    test('HQ-05 HQ-07 the manager comes with the notice after the roster, '
+        'each ManagerChanged replaces it and the views leave it', () {
+      final view = HeldView();
+
+      expect(view.manager, isNull);
+      view
+        ..apply(_whole())
+        ..apply(const ManagerNotice(accountId: 'a-1'));
+      expect(view.manager, 'a-1');
+
+      view
+        ..apply(_tick())
+        ..apply(_whole());
+      expect(view.manager, 'a-1');
+
+      view.apply(
+        _tick(
+          events: const [ManagerChanged(team: 'team-1', accountId: 'a-2')],
+        ),
+      );
+      expect(view.manager, 'a-2');
+
+      view.apply(const ManagerNotice());
+      expect(view.manager, isNull);
+    });
+
     test('decision 236 moves, units in and out of sight, HQs and relics', () {
       final view = HeldView()
         ..apply(_whole(units: [_unit('a'), _unit('b')]))

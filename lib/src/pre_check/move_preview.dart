@@ -195,7 +195,9 @@ final class MovePreviewer {
   }
 
   /// MAP-50: the width the units [seen] standing in [goal] take out of the
-  /// cell leaves less than the [width] of the mover.
+  /// cell leaves less than the [width] of the mover. A cell no one stands in
+  /// takes any unit, even one wider than the cell, which then overlaps the
+  /// cells beside it (designer, 2026-11-20, for maps of small cells).
   bool _taken(
     UnitView mover,
     double width,
@@ -203,13 +205,15 @@ final class MovePreviewer {
     Iterable<UnitView> seen,
   ) {
     var left = planner.cellSizeM;
+    var empty = true;
     for (final other in seen) {
       final at = other.position;
       if (other.unitId == mover.unitId || at == null || other.flying) continue;
       if (planner.cellAt(at) == goal) {
+        empty = false;
         left -= units.unitTypes[other.unitType]?.hitBox.width ?? 0;
       }
     }
-    return left < width;
+    return !empty && left < width;
   }
 }

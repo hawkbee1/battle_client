@@ -38,12 +38,14 @@ ${(heights ?? [for (final row in terrain) row.split(' ').map((_) => '0').join(' 
 $extra
 ''';
 
-/// A unit of [type] at cell ([cx], [cy]) of 10 m cells, with [ap] AP.
+/// A unit of [type] at cell ([cx], [cy]) of 10 m cells, or at [at], with
+/// [ap] AP.
 UnitView _unit(
   String id, {
   String type = 'soldier',
   int cx = 0,
   int cy = 0,
+  Position? at,
   double ap = 30,
   double perHour = 1,
   bool flying = false,
@@ -57,7 +59,7 @@ UnitView _unit(
   hp: 100,
   maxHp: 100,
   position: place == UnitPlace.deployed
-      ? Position.metres(cx * 10 + 5, cy * 10 + 5, 0)
+      ? at ?? Position.metres(cx * 10 + 5, cy * 10 + 5, 0)
       : null,
   flying: flying,
   weapon: 'rifle',
@@ -424,6 +426,28 @@ void main() {
 
         expect(unseen, equals(nobody));
         expect(unseen, isA<MovePreview>());
+      });
+
+      test('on a map of cells narrower than a unit, an empty cell takes it, '
+          'overlapping the cells beside it; a cell someone stands in is '
+          'refused when the width left is short', () {
+        final small = previewer(
+          _map([for (var row = 0; row < 5; row++) 'g g g g g'])
+              .replaceFirst('cell 10', 'cell 2'),
+        );
+        // Cells of 2 m: the tank, 3.6 m wide, on cell (1, 2), to (3, 2).
+        final tank = _unit(
+          't-1',
+          type: 'tank',
+          at: Position.metres(3, 5, 0),
+        );
+        final goal = Position.metres(7, 5, 0);
+
+        expect(preview(small, tank, goal), isA<MovePreview>());
+        expect(
+          preview(small, tank, goal, seen: [_unit('u-2', at: goal)]),
+          const MoveRefused(PreCheckRefusal.occupied),
+        );
       });
 
       test('airborne units neither block nor are blocked by ground units '

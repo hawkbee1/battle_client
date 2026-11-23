@@ -23,7 +23,8 @@ import 'package:battle_rules/battle_rules.dart'
 ///
 /// It starts from the map as built; [withWorld] applies the delta layer the
 /// host sent (MAP-06 to MAP-10): the walls built, the trees and buildings
-/// destroyed, the craters dug. What a unit sees is the host's to decide
+/// destroyed, the craters dug, and [seenAgainFrom] walks again only the
+/// lines a change can cross. What a unit sees is the host's to decide
 /// (stack decision 8): this is for display.
 /// {@endtemplate}
 final class GroundSight {
@@ -40,10 +41,17 @@ final class GroundSight {
                 ...island.values.map((cell) => cell.height),
             ].reduce(math.max) +
             terrain.flyingMaxAboveHighestTerrainM,
+        null,
+        const [],
       );
 
-  new _(this._map, this._terrain, this._altitudeLimitM, [this._lineCells])
-    : _vision = Vision(_terrain);
+  new _(
+    this._map,
+    this._terrain,
+    this._altitudeLimitM,
+    this._lineCells,
+    this._changed,
+  ) : _vision = Vision(_terrain);
 
   final nav.NavigationMap _map;
   final TerrainData _terrain;
@@ -51,65 +59,94 @@ final class GroundSight {
   final double _altitudeLimitM;
   _LineCells? _lineCells;
 
+  // The ground cells (`y × width + x`) whose height or objects differ, for
+  // a sight line, from the sight [withWorld] made this one from.
+  final List<int> _changed;
+
   /// What the lines of [seenFrom] read of each ground cell, made on first
-  /// use. A sight with the delta layer applied ([withWorld]) has its base's,
-  /// with only the cells the layer changed read again.
+  /// use, or handed on by the sight [withWorld] made this one from.
   _LineCells get _cells => _lineCells ??= _LineCells(_map, _terrain);
 
-  /// This sight on the map with the delta layer [world] applied, in the
-  /// host's order (craters, structures built, objects destroyed): only what
-  /// a sight line reads, that is the ground's height and the objects that
-  /// block sight or conceal. A bridge, a road, a ladder, a trap or damage
-  /// changes nothing it reads.
+  /// This sight with the delta layer's events [world] applied on top of the
+  /// ones it has, in the host's order (craters, structures built, objects
+  /// destroyed): only what a sight line reads ([reads]), that is the
+  /// ground's height and the objects that block sight or conceal. A bridge,
+  /// a road, a ladder, a trap or damage changes nothing it reads.
+  ///
+  /// The new sight takes the arrays [seenFrom] reads over from this one and
+  /// reads again only the cells the events change: a crater costs its own
+  /// cells, not the map's. This sight answers as before, and makes its
+  /// arrays again if it is used after.
   GroundSight withWorld(Iterable<BattleEvent> world) {
-    var map = _map;
-    nav.CellRef cellOf(Cell cell) =>
-        nav.CellRef(cell.x, cell.y, surface: cell.island ?? nav.groundSurface);
-    bool reads(String type) {
-      final object = _terrain.objects[type];
-      return object != null && (object.blocksLos || object.conceals != null);
+    final craters = <nav.Crater>[];
+    // The objects on each cell the events change, once they did.
+    final objects = <nav.CellRef, Set<String>>{};
+    Set<String> objectsOn(Cell cell) {
+      final ref = nav.CellRef(
+        cell.x,
+        cell.y,
+        surface: cell.island ?? nav.groundSurface,
+      );
+      return objects[ref] ??= {..._map.objectsAt(ref)};
     }
 
-    // The cells whose ground or objects the layer changes.
-    final changed = <nav.CellRef>[];
     for (final event in world) {
       switch (event) {
         case CraterDug(:final at, :final radiusM, :final depthM):
-          final crater = nav.Crater(
-            centreXM: at.x,
-            centreYM: at.y,
-            radiusM: radiusM,
-            depthM: depthM,
+          craters.add(
+            nav.Crater(
+              centreXM: at.x,
+              centreYM: at.y,
+              radiusM: radiusM,
+              depthM: depthM,
+            ),
           );
-          map = map.withCrater(crater);
-          for (final (x, y) in crater.cells(cellSizeM, width, depth)) {
-            changed.add(nav.CellRef(x, y));
-          }
         case StructureBuilt(:final structure, :final cells)
-            when reads(structure):
+            when _reads(structure):
           for (final cell in cells) {
-            map = nav
-                .applyChange(map, nav.ObjectBuilt(cellOf(cell), structure))
-                .$1;
-            changed.add(cellOf(cell));
+            objectsOn(cell).add(structure);
           }
-        case ObjectDestroyed(:final object, :final cells) when reads(object):
+        case ObjectDestroyed(:final object, :final cells) when _reads(object):
           for (final cell in cells) {
-            map = nav
-                .applyChange(map, nav.ObjectDestroyed(cellOf(cell), object))
-                .$1;
-            changed.add(cellOf(cell));
+            objectsOn(cell).remove(object);
           }
         default:
           break;
       }
     }
-    return GroundSight._(
-      map,
-      _terrain,
-      _altitudeLimitM,
-      changed.isEmpty ? _cells : _cells.after(map, _terrain, changed),
-    );
+    final map = _map.withCraters(craters).withObjects(objects);
+    // A line reads the ground's cells only: an island's, or one off the
+    // map, is on none of them.
+    final changed = [
+      for (final crater in craters)
+        for (final (x, y) in crater.cells(cellSizeM, width, depth))
+          y * width + x,
+      for (final cell in objects.keys)
+        if (cell.surface == nav.groundSurface &&
+            cell.x >= 0 &&
+            cell.y >= 0 &&
+            cell.x < width &&
+            cell.y < depth)
+          cell.y * width + cell.x,
+    ];
+    final cells = _lineCells?..patch(map, _terrain, changed);
+    _lineCells = null;
+    return GroundSight._(map, _terrain, _altitudeLimitM, cells, changed);
+  }
+
+  /// Whether [event] changes what a sight line reads: a crater dug, or a
+  /// structure built or an object destroyed that blocks sight or conceals.
+  /// [withWorld] leaves the other events aside.
+  bool reads(BattleEvent event) => switch (event) {
+    CraterDug() => true,
+    StructureBuilt(:final structure) => _reads(structure),
+    ObjectDestroyed(:final object) => _reads(object),
+    _ => false,
+  };
+
+  bool _reads(String type) {
+    final object = _terrain.objects[type];
+    return object != null && (object.blocksLos || object.conceals != null);
   }
 
   /// The side of a cell, in metres.
@@ -142,6 +179,46 @@ final class GroundSight {
     required double heightM,
     required double rangeM,
     required String weather,
+  }) => _scan(
+    from: from,
+    flying: flying,
+    heightM: heightM,
+    rangeM: rangeM,
+    weather: weather,
+  );
+
+  /// What [seenFrom] gives for the same arguments on this sight, from what
+  /// it gave, [before], on the sight [withWorld] made this one from: a line
+  /// that cannot cross a cell the delta layer changed gives what it gave,
+  /// and only the others are walked again. The cells come in no particular
+  /// order, and [before] itself comes back when no changed cell is within
+  /// reach (on a sight made from a map, none changed).
+  ///
+  /// Throws an [ArgumentError] for a [weather] the tables do not have.
+  List<int> seenAgainFrom({
+    required List<int> before,
+    required nav.CellRef from,
+    required bool flying,
+    required double heightM,
+    required double rangeM,
+    required String weather,
+  }) => _scan(
+    from: from,
+    flying: flying,
+    heightM: heightM,
+    rangeM: rangeM,
+    weather: weather,
+    before: before,
+  );
+
+  /// [seenFrom], or [seenAgainFrom] from [before].
+  List<int> _scan({
+    required nav.CellRef from,
+    required bool flying,
+    required double heightM,
+    required double rangeM,
+    required String weather,
+    List<int>? before,
   }) {
     final factor =
         _terrain.weather[weather] ??
@@ -153,26 +230,52 @@ final class GroundSight {
     // forest the line crosses, which only shortens it (MAP-31 to MAP-33).
     final baseM = rangeM * factor * standing.visionFactor;
     final reach = ((baseM + rules.heightBonusMaxM) / cellSizeM).ceil();
+    final cells = _cells..reach(reach);
+    final seen = <int>[];
+    _Shadow? shadow;
+    if (before != null) {
+      shadow = _Shadow.of(from, reach, _changed, width, cellSizeM);
+      if (shadow == null) return before;
+      if (shadow.whole) {
+        shadow = null;
+      } else {
+        for (final index in before) {
+          final dx = index % width - from.x;
+          final dy = index ~/ width - from.y;
+          if (!shadow.covers(dx, dy, cells.metres(dx.abs(), dy.abs()))) {
+            seen.add(index);
+          }
+        }
+      }
+    }
     final eyesZ = _pointZ(from, flying: flying);
     // Where [sightLine] starts its line: the top of the observer's hit
     // volume over its cell, flying or not (a flyer's line has no cell
     // between to rise above it).
     final lineFromZ = observer.height + heightM;
-    final cells = _cells..reach(reach);
-    final seen = <int>[];
+    // The cells to walk, in columns and rows from the observer: those
+    // within reach, of the shadow's box if any.
+    final north = math.max(-reach, shadow?.north ?? -reach);
+    final south = math.min(reach, shadow?.south ?? reach);
+    final west = math.max(-reach, shadow?.west ?? -reach);
+    final east = math.min(reach, shadow?.east ?? reach);
     for (
-      var y = math.max(0, from.y - reach);
-      y <= math.min(depth - 1, from.y + reach);
+      var y = math.max(0, from.y + north);
+      y <= math.min(depth - 1, from.y + south);
       y++
     ) {
       for (
-        var x = math.max(0, from.x - reach);
-        x <= math.min(width - 1, from.x + reach);
+        var x = math.max(0, from.x + west);
+        x <= math.min(width - 1, from.x + east);
         x++
       ) {
         // Cheap first: the distance against the most the height can add.
         final distanceM = cells.metres((x - from.x).abs(), (y - from.y).abs());
         if (distanceM > baseM + rules.heightBonusMaxM) continue;
+        if (shadow != null &&
+            !shadow.covers(x - from.x, y - from.y, distanceM)) {
+          continue;
+        }
         final index = y * width + x;
         final toZ = cells.heights[index];
         final bonusM = math.min(
@@ -300,9 +403,9 @@ final class _LineCells {
       heights = Float64List(map.width * map.depth),
       blocks = Uint8List(map.width * map.depth),
       forests = Uint8List(map.width * map.depth) {
-    // Made again for each change of the delta layer, on maps of millions of
-    // cells: read in bulk, and through the map's lookups only where a
-    // crater changed the ground.
+    // Made once for a sight from a map, on maps of millions of cells (a
+    // change of the delta layer patches them): read in bulk, and through
+    // the map's lookups only where a crater changed the ground.
     final ground = map.ground;
     String? terrainBefore;
     var blocksBefore = false;
@@ -340,32 +443,18 @@ final class _LineCells {
     }
   }
 
-  new _copy(_LineCells cells)
-    : width = cells.width,
-      cellSizeM = cells.cellSizeM,
-      heights = Float64List.fromList(cells.heights),
-      blocks = Uint8List.fromList(cells.blocks),
-      forests = Uint8List.fromList(cells.forests),
-      _metres = cells._metres,
-      _side = cells._side;
-
-  /// These cells on [map], a later state of this one's map where only the
-  /// cells [changed] differ: a copy, with those read again. A change of the
-  /// delta layer touches a few cells of a map of millions.
-  _LineCells after(
+  /// Reads again from [map], a later state of the map these cells were read
+  /// from, the ground cells [changed] (`y × width + x`, on the map): a
+  /// change of the delta layer touches a few cells of a map of millions.
+  void patch(
     nav.NavigationMap map,
     TerrainData terrain,
-    Iterable<nav.CellRef> changed,
+    Iterable<int> changed,
   ) {
-    final next = _LineCells._copy(this);
-    for (final cell in changed) {
-      // An island's cell, or one off the map, is on no line.
-      final ground = cell.surface == nav.groundSurface
-          ? map.cellAt(cell)
-          : null;
-      if (ground == null) continue;
-      final index = cell.y * width + cell.x;
-      next.heights[index] = ground.height;
+    for (final index in changed) {
+      final cell = nav.CellRef(index % width, index ~/ width);
+      final ground = map.cellAt(cell)!;
+      heights[index] = ground.height;
       var blocking = terrain.terrainTypes[ground.terrain]?.blocksLos ?? false;
       var forest = 0;
       for (final name in map.objectsAt(cell)) {
@@ -373,10 +462,9 @@ final class _LineCells {
         if (type?.blocksLos ?? false) blocking = true;
         if (type?.conceals == 'forest') forest++;
       }
-      next.blocks[index] = blocking ? 1 : 0;
-      next.forests[index] = forest;
+      blocks[index] = blocking ? 1 : 0;
+      forests[index] = forest;
     }
-    return next;
   }
 
   /// The columns of the map.
@@ -467,5 +555,148 @@ final class _LineCells {
       }
     }
     return forest;
+  }
+}
+
+/// {@template shadow}
+/// The cells whose sight line from an observer can cross a ground cell a
+/// change of the delta layer changed, those cells included. A line walks
+/// the cells half a cell at most from the straight line between the
+/// centres (Bresenham), so it crosses a cell only towards a direction
+/// within the angle that cell spans from the observer, and only to a cell
+/// no nearer than it: both are taken a whole cell wide, for the rounding of
+/// the sums. Where the observer's own cell changed, every line may have.
+/// {@endtemplate}
+final class _Shadow {
+  new _(
+    this._cones, {
+    this.whole = false,
+    this.west = 0,
+    this.east = 0,
+    this.north = 0,
+    this.south = 0,
+  });
+
+  /// {@macro shadow}
+  ///
+  /// The shadow from [from] of the cells [changed] (`y × width + x`, of
+  /// [cellSizeM] metres) within [reach] columns and rows of it; null when
+  /// there is none.
+  static _Shadow? of(
+    nav.CellRef from,
+    int reach,
+    List<int> changed,
+    int width,
+    double cellSizeM,
+  ) {
+    // The directions each changed cell spans, in radians from its start
+    // below π to its end, and the metres to the nearest cell it shades.
+    final arcs = <(double, double, double)>[];
+    for (final index in changed) {
+      final dx = index % width - from.x;
+      final dy = index ~/ width - from.y;
+      if (dx.abs() > reach || dy.abs() > reach) continue;
+      if (dx == 0 && dy == 0) return _Shadow._(Float64List(0), whole: true);
+      final cells = math.sqrt(dx * dx + dy * dy);
+      final half = math.asin(math.min(1, 1 / cells));
+      var start = math.atan2(dy, dx) - half;
+      if (start < -math.pi) start += 2 * math.pi;
+      arcs.add((start, start + 2 * half, (cells - 1) * cellSizeM));
+    }
+    if (arcs.isEmpty) return null;
+    // Arcs that overlap make one cone: a crater's cells make one or two.
+    arcs.sort((a, b) => a.$1.compareTo(b.$1));
+    final cones = <double>[];
+    // The box the cones fit in, in columns and rows from the observer.
+    var west = double.infinity;
+    var east = double.negativeInfinity;
+    var north = double.infinity;
+    var south = double.negativeInfinity;
+    void corner(double angle, double cells) {
+      final x = math.cos(angle) * cells;
+      final y = math.sin(angle) * cells;
+      west = math.min(west, x);
+      east = math.max(east, x);
+      north = math.min(north, y);
+      south = math.max(south, y);
+    }
+
+    var (start, end, nearM) = arcs.first;
+    void cone() {
+      final half = math.min(math.pi, (end - start) / 2);
+      final middle = start + half;
+      cones.addAll([
+        math.cos(middle) * cellSizeM,
+        math.sin(middle) * cellSizeM,
+        math.cos(half),
+        nearM,
+      ]);
+      // A cone from its nearest cell out to the reach fits in the box of
+      // its edges, at both ends, and of the axes it holds, at the reach.
+      final near = math.max<double>(0, nearM / cellSizeM);
+      for (final edge in [start, end]) {
+        corner(edge, near);
+        corner(edge, reach.toDouble());
+      }
+      for (final axis in const [0.0, math.pi / 2, math.pi, -math.pi / 2]) {
+        if (math.cos(axis - middle) >= math.cos(half)) {
+          corner(axis, reach.toDouble());
+        }
+      }
+    }
+
+    for (final (nextStart, nextEnd, nextNearM) in arcs.skip(1)) {
+      if (nextStart <= end) {
+        end = math.max(end, nextEnd);
+        nearM = math.min(nearM, nextNearM);
+      } else {
+        cone();
+        (start, end, nearM) = (nextStart, nextEnd, nextNearM);
+      }
+    }
+    cone();
+    // A cell more each way, for the rounding of the sums.
+    return _Shadow._(
+      Float64List.fromList(cones),
+      west: west.floor() - 1,
+      east: east.ceil() + 1,
+      north: north.floor() - 1,
+      south: south.ceil() + 1,
+    );
+  }
+
+  /// Whether every line from the observer may have changed: its own cell
+  /// did.
+  final bool whole;
+
+  /// The box the shadow fits in, in columns west (negative) and east, and
+  /// rows north (negative) and south of the observer.
+  final int west;
+
+  /// See [west].
+  final int east;
+
+  /// See [west].
+  final int north;
+
+  /// See [west].
+  final int south;
+
+  // Four numbers by cone of directions: its middle direction, in metres
+  // east and south by cell, the cosine of half its angle, and the metres
+  // to the nearest cell it shades.
+  final Float64List _cones;
+
+  /// Whether the line to the cell [dx] columns and [dy] rows from the
+  /// observer, [distanceM] metres away, can cross a changed cell.
+  bool covers(int dx, int dy, double distanceM) {
+    final cones = _cones;
+    for (var i = 0; i < cones.length; i += 4) {
+      if (distanceM >= cones[i + 3] &&
+          cones[i] * dx + cones[i + 1] * dy >= distanceM * cones[i + 2]) {
+        return true;
+      }
+    }
+    return false;
   }
 }

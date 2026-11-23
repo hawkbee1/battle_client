@@ -465,6 +465,194 @@ void main() {
       });
     });
 
+    group('seenAgainFrom walks again only the lines a change can cross', () {
+      List<int> seen(
+        GroundSight sight,
+        nav.CellRef from, {
+        List<int>? before,
+        double range = 50,
+        String weather = 'clear',
+        bool flying = false,
+      }) => before == null
+          ? sight.seenFrom(
+              from: from,
+              flying: flying,
+              heightM: eyes,
+              rangeM: range,
+              weather: weather,
+            )
+          : sight.seenAgainFrom(
+              before: before,
+              from: from,
+              flying: flying,
+              heightM: eyes,
+              rangeM: range,
+              weather: weather,
+            );
+
+      /// One to three changes of the delta layer anywhere on [sight]'s map:
+      /// craters, walls built, trees, buildings and walls destroyed, and a
+      /// wall on the floating island.
+      List<BattleEvent> changes(math.Random random, GroundSight sight) {
+        Cell cell() =>
+            Cell(random.nextInt(sight.width), random.nextInt(sight.depth));
+        final size = sight.cellSizeM;
+        return [
+          for (var i = random.nextInt(3); i >= 0; i--)
+            switch (random.nextInt(6)) {
+              0 || 1 => CraterDug(
+                at: Position.metres(
+                  random.nextDouble() * sight.width * size,
+                  random.nextDouble() * sight.depth * size,
+                  0,
+                ),
+                radiusM: size * (0.5 + random.nextDouble() * 2.5),
+                depthM: 1 + random.nextDouble() * 9,
+              ),
+              2 => StructureBuilt(
+                siteId: 'w-$i',
+                structure: 'wall',
+                cells: [
+                  cell(),
+                  cell(),
+                  const Cell(7, 5, island: 'sky'),
+                ],
+              ),
+              3 => ObjectDestroyed(object: 'tree', cells: [cell(), cell()]),
+              4 => ObjectDestroyed(object: 'building', cells: [cell()]),
+              _ => ObjectDestroyed(object: 'wall', cells: [cell()]),
+            },
+        ];
+      }
+
+      for (final (name, cell, range, weather, flying) in [
+        ('a valley of 10 m cells', 10.0, 120.0, 'clear', false),
+        ('a valley of 10 m cells in fog', 10.0, 150.0, 'fog', false),
+        ('a valley of 10 m cells, flying', 10.0, 60.0, 'clear', true),
+        ('a valley of 2 m cells', 2.0, 20.0, 'clear', false),
+      ]) {
+        test('MAP-06 MAP-07 MAP-28 from every cell of $name, change after '
+            'change, it gives what seenFrom gives', () {
+          final random = math.Random(cell.toInt() * 1000 + range.toInt());
+          var sight = sightOver(_valley(cell: cell));
+          final observers = [
+            for (var y = 0; y < sight.depth; y++)
+              for (var x = 0; x < sight.width; x++) nav.CellRef(x, y),
+            for (final x in [6, 7, 8]) nav.CellRef(x, 5, surface: 'sky'),
+          ];
+          var known = {
+            for (final from in observers)
+              from: seen(
+                sight,
+                from,
+                range: range,
+                weather: weather,
+                flying: flying,
+              ),
+          };
+          for (var step = 0; step < 8; step++) {
+            sight = sight.withWorld(changes(random, sight));
+            known = {
+              for (final from in observers)
+                from: seen(
+                  sight,
+                  from,
+                  before: known[from],
+                  range: range,
+                  weather: weather,
+                  flying: flying,
+                ),
+            };
+            for (final from in observers) {
+              expect(
+                known[from],
+                unorderedEquals(
+                  seen(
+                    sight,
+                    from,
+                    range: range,
+                    weather: weather,
+                    flying: flying,
+                  ),
+                ),
+                reason: 'step $step, seen from $from',
+              );
+            }
+          }
+        });
+      }
+
+      test('with no changed cell within reach, the cells it gave come back, '
+          'as on a sight made from a map', () {
+        final plain = sightOver(_row('g' * 30));
+        const from = nav.CellRef(0, 0);
+        final before = seen(plain, from);
+        // Range 50 m, and up to 150 m more from height: 20 cells.
+        final far = plain.withWorld([
+          CraterDug(at: Position.metres(255, 5, 0), radiusM: 4, depthM: 3),
+        ]);
+
+        expect(seen(far, from, before: before), same(before));
+        expect(seen(plain, from, before: before), same(before));
+      });
+
+      test('MAP-07 the observer standing in a new crater looks up at the '
+          'rim: every line is walked again', () {
+        final open = sightOver(_row('gggggggg'));
+        const from = nav.CellRef(0, 0);
+        final before = seen(open, from);
+        final dug = open.withWorld([
+          CraterDug(at: Position.metres(5, 5, 0), radiusM: 12, depthM: 30),
+        ]);
+
+        expect(seen(dug, from, before: before), seen(dug, from));
+        expect(seen(dug, from), hasLength(lessThan(before.length)));
+      });
+
+      test('reads a crater, and a structure built or an object destroyed '
+          'that blocks sight or conceals', () {
+        final sight = sightOver(_row('gg'));
+        const cells = [Cell(1, 0)];
+
+        expect(
+          sight.reads(
+            CraterDug(at: Position.metres(5, 5, 0), radiusM: 4, depthM: 1),
+          ),
+          isTrue,
+        );
+        expect(
+          sight.reads(
+            const StructureBuilt(siteId: 'w', structure: 'wall', cells: cells),
+          ),
+          isTrue,
+        );
+        expect(
+          sight.reads(
+            const StructureBuilt(
+              siteId: 'b',
+              structure: 'bridge',
+              cells: cells,
+            ),
+          ),
+          isFalse,
+        );
+        expect(
+          sight.reads(const ObjectDestroyed(object: 'tree', cells: cells)),
+          isTrue,
+        );
+        expect(
+          sight.reads(const ObjectDestroyed(object: 'bridge', cells: cells)),
+          isFalse,
+        );
+        expect(
+          sight.reads(
+            const ObjectDamaged(object: 'building', cells: cells, hp: 10),
+          ),
+          isFalse,
+        );
+      });
+    });
+
     test('MAP-27 the range is cut at the edge of the map', () {
       final sight = sightOver(_row('gggg'));
 

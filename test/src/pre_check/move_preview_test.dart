@@ -436,11 +436,7 @@ void main() {
               .replaceFirst('cell 10', 'cell 2'),
         );
         // Cells of 2 m: the tank, 3.6 m wide, on cell (1, 2), to (3, 2).
-        final tank = _unit(
-          't-1',
-          type: 'tank',
-          at: Position.metres(3, 5, 0),
-        );
+        final tank = _unit('t-1', type: 'tank', at: Position.metres(3, 5, 0));
         final goal = Position.metres(7, 5, 0);
 
         expect(preview(small, tank, goal), isA<MovePreview>());
@@ -500,6 +496,71 @@ void main() {
 
       expect(path(1), equals(path(1)));
       expect(path(1), isNot(equals(path(2))));
+    });
+  });
+
+  group('the planner remembers its last answers', () {
+    final soldier = Mover.unit(units.unitTypes['soldier']!);
+    final row = nav.NavigationFixture.parse(_map(['g g g g g']));
+
+    PlannedPath? find(NavigationPathPlanner planner, int x, {Mover? mover}) =>
+        planner.find(
+          mover: mover ?? soldier,
+          from: const nav.CellRef(0, 0),
+          to: nav.CellRef(x, 0),
+        );
+
+    test('the same search gives the same answer without searching again: '
+        'a move is searched when previewed, then when the unit is drawn '
+        'going', () {
+      final planner = NavigationPathPlanner(map: row, terrain: terrain);
+      final path = find(planner, 3);
+
+      expect(path, isNotNull);
+      expect(find(planner, 3), same(path));
+      // Another mover, or another cell, is another search.
+      final jeep = Mover.unit(units.unitTypes['jeep']!);
+      expect(find(planner, 3, mover: jeep), isNot(same(path)));
+      expect(find(planner, 4), isNot(same(path)));
+    });
+
+    test('it keeps the last ones: the one asked for longest ago goes', () {
+      final planner = NavigationPathPlanner(
+        map: row,
+        terrain: terrain,
+        remembered: 2,
+      );
+      final one = find(planner, 1);
+      final two = find(planner, 2);
+
+      // Asked again, the first is the newest: the second goes next.
+      expect(find(planner, 1), same(one));
+      find(planner, 3);
+      expect(find(planner, 1), same(one));
+      final again = find(planner, 2);
+      expect(again, isNot(same(two)));
+      expect(again!.cells, two!.cells);
+      expect(again.cost, two.cost);
+    });
+
+    test('no path is an answer too', () {
+      final planner = NavigationPathPlanner(
+        map: nav.NavigationFixture.parse(_map(['g w g'])),
+        terrain: terrain,
+      );
+
+      expect(find(planner, 2), isNull);
+      expect(find(planner, 2), isNull);
+    });
+
+    test('a path is given unmodifiable, since it is given again', () {
+      final path = find(NavigationPathPlanner(map: row, terrain: terrain), 2)!;
+
+      expect(
+        () => path.cells.add(const nav.CellRef(0, 0)),
+        throwsUnsupportedError,
+      );
+      expect(path.samples.clear, throwsUnsupportedError);
     });
   });
 

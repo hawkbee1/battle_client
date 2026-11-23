@@ -1,9 +1,11 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:battle_client/battle_client.dart';
 import 'package:battle_pathfinding/battle_pathfinding.dart' as nav;
 import 'package:battle_protocol/battle_protocol.dart';
-import 'package:battle_rules/battle_rules.dart' show TerrainData, UnitsData;
+import 'package:battle_rules/battle_rules.dart'
+    show TerrainData, UnitsData, Vision;
 import 'package:test/test.dart';
 
 /// The plan's own files, read from the hawkbee checkout (stack decision 7).
@@ -24,6 +26,59 @@ terrain
 heights
   ${heights ?? List.filled(terrain.length, '0').join(' ')}
 ''';
+
+/// A valley of 16 × 12 cells of [cell] metres with every ground a sight line
+/// reads, drawn by a seeded random: hills, woods (a tree on grass or on the
+/// forest floor), buildings, a mountain, a road, a town street, a river, and
+/// a floating island over it all.
+String _valley({double cell = 10}) {
+  final random = math.Random(241);
+  const width = 16;
+  const depth = 12;
+  final rows = [
+    for (var y = 0; y < depth; y++)
+      [
+        for (var x = 0; x < width; x++)
+          switch (random.nextInt(20)) {
+            0 || 1 => 't',
+            2 || 3 => 'f',
+            4 => 'b',
+            5 => 'm',
+            6 => 'r',
+            7 => 's',
+            8 => '~',
+            _ => 'g',
+          },
+      ].join(' '),
+  ];
+  final heights = [
+    for (var y = 0; y < depth; y++)
+      [
+        for (var x = 0; x < width; x++)
+          (12 * math.sin(x / 3) * math.cos(y / 4) +
+                  12 +
+                  random.nextInt(30) / 10)
+              .toStringAsFixed(1),
+      ].join(' '),
+  ];
+  return '''
+cell $cell
+water river
+legend g grass
+legend t grass tree
+legend f forest_floor tree
+legend b grass building
+legend m mountain
+legend r road
+legend s town_street
+legend ~ river
+terrain
+${rows.map((row) => '  $row').join('\n')}
+heights
+${heights.map((row) => '  $row').join('\n')}
+island sky 40 floating_island_ground 6,5 7,5 8,5
+''';
+}
 
 void main() {
   final terrain = TerrainData.parse(_plan('terrain.yaml'));
@@ -233,6 +288,180 @@ void main() {
         ]);
 
         expect(seenColumns(same), seenColumns(sight));
+      });
+    });
+
+    group('seenFrom says what the rule says of every cell', () {
+      // The rule itself: `Vision.sees` on the sight line to each cell of the
+      // map, row by row. `seenFrom` reads flat arrays of the map and leaves a
+      // line at the first cell that blocks it, so that a sight of 300 m on
+      // cells of 2 m is fast; it must give the same cells, in the same order.
+      List<int> byTheRule(
+        GroundSight sight,
+        nav.CellRef from, {
+        required bool flying,
+        required double range,
+        required String weather,
+      }) => [
+        for (var y = 0; y < sight.depth; y++)
+          for (var x = 0; x < sight.width; x++)
+            if (Vision(terrain).sees(
+              visionRange: range,
+              weather: weather,
+              line: sight.sightLine(
+                from,
+                nav.CellRef(x, y),
+                fromFlying: flying,
+                fromHeightM: eyes,
+              ),
+            ))
+              y * sight.width + x,
+      ];
+
+      void expectTheRule(
+        GroundSight sight,
+        Iterable<nav.CellRef> observers, {
+        bool flying = false,
+        double range = 100,
+        String weather = 'clear',
+      }) {
+        for (final from in observers) {
+          expect(
+            sight.seenFrom(
+              from: from,
+              flying: flying,
+              heightM: eyes,
+              rangeM: range,
+              weather: weather,
+            ),
+            byTheRule(
+              sight,
+              from,
+              flying: flying,
+              range: range,
+              weather: weather,
+            ),
+            reason: 'seen from $from',
+          );
+        }
+      }
+
+      Iterable<nav.CellRef> everyCell(GroundSight sight) => [
+        for (var y = 0; y < sight.depth; y++)
+          for (var x = 0; x < sight.width; x++) nav.CellRef(x, y),
+      ];
+
+      for (final (weather, range, flying) in [
+        ('clear', 60.0, false),
+        ('clear', 300.0, false),
+        ('fog', 150.0, false),
+        ('clear', 60.0, true),
+      ]) {
+        test('MAP-26 to MAP-34 from every cell of a valley, $weather, range '
+            '$range${flying ? ', flying' : ''}', () {
+          final sight = sightOver(_valley());
+
+          expectTheRule(
+            sight,
+            everyCell(sight),
+            flying: flying,
+            range: range,
+            weather: weather,
+          );
+        });
+      }
+
+      test('on cells of 2 m, and from a floating island', () {
+        final sight = sightOver(_valley(cell: 2));
+
+        expectTheRule(sight, everyCell(sight), range: 20);
+        expectTheRule(sight, [
+          for (final x in [6, 7, 8]) nav.CellRef(x, 5, surface: 'sky'),
+        ], range: 20);
+      });
+
+      test('MAP-06 MAP-07 MAP-28 with the delta layer: a crater, a wall, a '
+          'building and a tree destroyed', () {
+        final valley = sightOver(_valley());
+        final changed = valley.withWorld([
+          CraterDug(at: Position.metres(55, 45, 0), radiusM: 12, depthM: 8),
+          const StructureBuilt(
+            siteId: 'w-1',
+            structure: 'wall',
+            cells: [Cell(9, 3), Cell(9, 4), Cell(9, 5)],
+          ),
+          const ObjectDestroyed(
+            object: 'building',
+            cells: [Cell(2, 0), Cell(10, 7)],
+          ),
+          const ObjectDestroyed(object: 'tree', cells: [Cell(4, 4)]),
+        ]);
+
+        expectTheRule(changed, everyCell(changed), range: 120);
+      });
+
+      test('MAP-07 on a map dug already', () {
+        final dug = GroundSight(
+          map: nav.NavigationFixture.parse(_valley()).withCrater(
+            const nav.Crater(
+              centreXM: 55,
+              centreYM: 45,
+              radiusM: 12,
+              depthM: 8,
+            ),
+          ),
+          terrain: terrain,
+        );
+
+        expectTheRule(dug, everyCell(dug), range: 120);
+      });
+
+      test('an object off the map blocks no line, nor a wall built there', () {
+        final map = nav.NavigationFixture.parse(_row('gggggg'));
+        final sight = GroundSight(
+          map: map.copyWith(
+            objects: {
+              // Read as cells of the map, these would be (0, 1) and (5, 0).
+              const nav.CellRef(6, 0): {'building'},
+              const nav.CellRef(-1, 1): {'building'},
+            },
+          ),
+          terrain: terrain,
+        );
+        final walled = sight.withWorld([
+          const StructureBuilt(
+            siteId: 'w-9',
+            structure: 'wall',
+            cells: [Cell(-1, 1), Cell(2, 3)],
+          ),
+        ]);
+
+        expect(seenColumns(sight), {0, 1, 2, 3, 4, 5});
+        expect(seenColumns(walled), {0, 1, 2, 3, 4, 5});
+      });
+
+      test('a change of the delta layer reads again only the cells it '
+          'changes: the sight before it is left as it was', () {
+        final sight = sightOver(_row('gggggggg'));
+        final before = seenColumns(sight);
+        final walled = sight.withWorld([
+          const StructureBuilt(
+            siteId: 'w-1',
+            structure: 'wall',
+            cells: [Cell(3, 0)],
+          ),
+        ]);
+
+        expect(seenColumns(walled), {0, 1, 2, 3});
+        expect(seenColumns(sight), before);
+        expect(
+          seenColumns(
+            walled.withWorld([
+              const ObjectDestroyed(object: 'wall', cells: [Cell(3, 0)]),
+            ]),
+          ),
+          before,
+        );
       });
     });
 

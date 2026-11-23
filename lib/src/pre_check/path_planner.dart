@@ -69,12 +69,20 @@ abstract interface class PathPlanner {
 /// It knows the map as built: the structures built and destroyed during the
 /// battle (the delta layer) are not applied to it, so after one a preview
 /// can differ from the host's answer, which wins.
+///
+/// The map never changes, so neither does an answer: the last [remembered]
+/// are kept and given again. A move is searched when it is previewed, then
+/// again when the app draws the unit going (`UnitRoutes`); on a map of small
+/// cells a long path costs a tenth of a second or more.
 /// {@endtemplate}
 final class NavigationPathPlanner implements PathPlanner {
   /// {@macro navigation_path_planner}
-  new({required nav.NavigationMap map, required TerrainData terrain})
-    : _map = map,
-      _cost = MovementCost(terrain).call {
+  new({
+    required nav.NavigationMap map,
+    required TerrainData terrain,
+    this.remembered = 8,
+  }) : _map = map,
+       _cost = MovementCost(terrain).call {
     final highest = [
       ...map.ground.map((cell) => cell.height),
       for (final island in map.islands.values)
@@ -88,12 +96,19 @@ final class NavigationPathPlanner implements PathPlanner {
     _finder = nav.Pathfinder(map: map, cost: _cost, rules: _rules);
   }
 
+  /// How many of the last answers are kept.
+  final int remembered;
+
   final nav.NavigationMap _map;
   final nav.MovementCostFunction _cost;
   late final nav.PathRules _rules;
   late final nav.GroundGrid _grid;
   late final nav.Pathfinder _finder;
   final _searches = <(double, String), nav.GroundSearch>{};
+
+  // The last answers, the oldest first, by the mover's AP a metre and
+  // modes and the two cells.
+  final _answers = <(double, String, nav.CellRef, nav.CellRef), PlannedPath?>{};
 
   @override
   double get cellSizeM => _map.cellSizeM;
@@ -114,6 +129,18 @@ final class NavigationPathPlanner implements PathPlanner {
     required nav.CellRef from,
     required nav.CellRef to,
   }) {
+    final key = (mover.apPerM, mover.modes.join(','), from, to);
+    if (_answers.containsKey(key)) {
+      // The newest again: it is the last to go.
+      return _answers[key] = _answers.remove(key);
+    }
+    final answer = _search(mover, from, to);
+    _answers[key] = answer;
+    if (_answers.length > remembered) _answers.remove(_answers.keys.first);
+    return answer;
+  }
+
+  PlannedPath? _search(Mover mover, nav.CellRef from, nav.CellRef to) {
     final pathMover = nav.PathMover(apPerM: mover.apPerM, modes: mover.modes);
     final onGround =
         from.surface == nav.groundSurface &&
@@ -128,16 +155,17 @@ final class NavigationPathPlanner implements PathPlanner {
               .fast(from, to)
         : _finder.find(mover: pathMover, from: from, to: to);
     if (found == null) return null;
+    // Unmodifiable: the same answer may be given again.
     return PlannedPath(
-      cells: found.cells,
-      samples: [
+      cells: List.unmodifiable(found.cells),
+      samples: List.unmodifiable([
         for (final sample in found.samples)
           PathSample(
             terrainType: sample.terrainType,
             slopeDegrees: sample.slopeDegrees,
             lengthM: sample.lengthM,
           ),
-      ],
+      ]),
       cost: found.cost,
     );
   }
